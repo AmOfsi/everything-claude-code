@@ -15,7 +15,8 @@ $ARGUMENTS can be:
 1. Run `gh auth status` — STOP if not authenticated
 2. Detect current branch and repo: `git rev-parse --abbrev-ref HEAD`, `gh repo view --json nameWithOwner -q .nameWithOwner`
 3. STOP with error if:
-   - On `main` or `master`
+   - Current branch equals the base branch
+   - On a protected branch (`main` or `master`)
    - Worktree is dirty (`git status --porcelain` is non-empty)
    - No commits ahead of base (`git log <base>..HEAD --oneline` is empty)
 4. Show summary to user:
@@ -46,7 +47,7 @@ $ARGUMENTS can be:
    gh api repos/{owner}/{repo}/pulls/{number}/reviews
    gh api repos/{owner}/{repo}/pulls/{number}/comments
    ```
-4. If zero comments with actionable content → skip to Phase 5
+4. If zero review comments → skip to Phase 5
 5. Otherwise → proceed to Phase 3
 
 ## Phase 3: Triage Comments
@@ -88,7 +89,7 @@ TRIAGE (iteration N):
    - Read the file at the referenced location
    - Apply the fix
    - Verify the fix doesn't break build/types
-2. Stage and commit: `git add -A && git commit -m "pr-review: fix iteration N"`
+2. Stage and commit: `git add -A && git commit -m "chore(pr-review): fix iteration N"`
 3. `git push`
 4. Increment iteration counter
 5. Loop back to Phase 2
@@ -96,7 +97,21 @@ TRIAGE (iteration N):
 ## Phase 5: Merge & Cleanup
 
 1. Verify: `gh pr checks <number>` all pass
-2. Verify: no unresolved review comments remain
+2. Verify no unresolved review threads remain:
+   ```
+   gh api graphql -f query='
+     query($owner:String!, $name:String!, $number:Int!) {
+       repository(owner:$owner, name:$name) {
+         pullRequest(number:$number) {
+           reviewThreads(first:100) {
+             nodes { isResolved }
+           }
+         }
+       }
+     }' -F owner='<owner>' -F name='<repo>' -F number=<number> \
+     | jq -e '.data.repository.pullRequest.reviewThreads.nodes | all(.isResolved)'
+   ```
+   Alternatively, coarser check: `gh pr view <number> --json reviewDecision -q .reviewDecision` is `APPROVED`
 3. If `--no-merge` flag: report clean status and STOP
 4. Ask user to confirm merge
 5. Execute:
