@@ -34,7 +34,8 @@ $ARGUMENTS can be:
 2. Check if PR exists: `gh pr view --json number,url 2>/dev/null`
    - If exists: report URL, continue
    - If `--skip-create` flag: STOP with error if no PR exists
-   - Otherwise: `gh pr create --fill --base <base>` — report URL
+   - Otherwise: `gh pr create --fill --base <base> -R <owner/repo>` — report URL
+   - Note: on forks, `gh` defaults to upstream — always specify `-R` explicitly
 3. Store PR number for later phases
 
 ## Phase 2: Wait for Reviews
