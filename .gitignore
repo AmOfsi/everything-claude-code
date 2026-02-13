@@ -30,3 +30,7 @@ examples/sessions/*.tmp
 
 # Local drafts
 marketing/
+
+# Ralph Mail (transient cross-session communication)
+ralph-inbox/
+ralph-outbox/
