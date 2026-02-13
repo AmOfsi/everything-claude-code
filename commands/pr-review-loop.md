@@ -9,17 +9,28 @@ $ARGUMENTS can be:
 - `<branch-name>` - Custom base branch
 - `--skip-create` - Assume PR already exists
 - `--no-merge` - Stop after reviews are clean, don't merge
+- `--ignore-checks <name,...>` - Skip specific CI checks (e.g., `--ignore-checks claude-review,slow-test`)
+- `--skip-quality-gates` - Skip Phase 0.25 (test-coverage, docs update)
 
 ## Phase 0: Pre-flight
 
 1. Run `gh auth status` — STOP if not authenticated
 2. Detect current branch and repo: `git rev-parse --abbrev-ref HEAD`, `gh repo view --json nameWithOwner -q .nameWithOwner`
-3. STOP with error if:
-   - Current branch equals the base branch
-   - On a protected branch (`main` or `master`)
-   - Worktree is dirty (`git status --porcelain` is non-empty)
-   - No commits ahead of base (`git log <base>..HEAD --oneline` is empty)
-4. Show summary to user:
+3. Check for blockers:
+   - **Worktree dirty** (`git status --porcelain` non-empty) → STOP
+   - **No commits ahead** (`git log origin/<base>..HEAD` empty) → STOP
+   - **On protected branch** (`main` or `master`) with commits ahead → **Auto-create branch** (see below)
+4. **Auto-branch creation** (when on main/master with unpushed commits):
+   - Analyze commit messages to extract key themes (feat, fix, refactor, ci, etc.)
+   - Generate branch name: `<type>/<2-4-word-summary>` (e.g., `feature/med-capacity-ci-review`)
+   - Execute:
+     ```bash
+     git branch <new-branch>
+     git reset --hard origin/main
+     git checkout <new-branch>
+     ```
+   - Report: "Created branch `<new-branch>` from commits on main"
+5. Show summary to user:
    ```
    REPO:   owner/repo
    BRANCH: feature-branch
@@ -27,6 +38,66 @@ $ARGUMENTS can be:
    AHEAD:  3 commits
    ```
 5. Ask user to confirm before proceeding
+
+## Phase 0.25: Quality Gates (unless --skip-quality-gates)
+
+Run quality assurance checks BEFORE code review. This ensures tests pass and docs are current.
+
+1. **Test Coverage Check**:
+   - Detect test framework: `npm test`, `pytest`, `go test`, `dotnet test`
+   - Run tests with coverage: `npm test -- --coverage`, `pytest --cov`, etc.
+   - Parse coverage report
+   - If coverage < 80%:
+     - List under-covered files
+     - Ask user: "Coverage is X%. Generate missing tests?" (Y/N)
+     - If Y: Use **tdd-guide** agent to generate tests for under-covered files
+     - Re-run tests to verify
+
+2. **Documentation Sync**:
+   - Check if `docs/CODEMAPS/` exists — if so, run `/update-codemaps`
+   - Check if README mentions APIs that changed — flag for review
+   - Check `.env.example` matches code usage
+
+3. **Show quality summary**:
+   ```
+   QUALITY GATES:
+   ✓ Tests:     935 pass, 4 skip (98.2% coverage)
+   ✓ Docs:      CODEMAPS updated
+   ⚠ Coverage:  src/api/auth.ts at 72% (below 80%)
+   ```
+
+4. If any CRITICAL issues (tests failing, build broken): **STOP**
+
+## Phase 0.5: Local Pre-Push Review
+
+Run local agent reviews BEFORE pushing. Catches issues faster and cheaper than CI.
+
+1. Get diff for review: `git diff <base>...HEAD`
+2. Launch **two agents in parallel** using the Task tool:
+   - **code-reviewer**: Code quality, bugs, logic errors
+   - **security-reviewer**: Security vulnerabilities, secrets, injection
+3. Each agent reviews the diff and returns findings as:
+   ```
+   CRITICAL: [issue] — File:Line — Must fix before push
+   HIGH:     [issue] — File:Line — Should fix
+   MEDIUM:   [issue] — File:Line — Consider fixing
+   LOW:      [issue] — File:Line — Optional improvement
+   ```
+4. Aggregate findings into triage table:
+   ```
+   LOCAL REVIEW (pre-push):
+
+   | # | Severity | Agent    | Issue                        | File:Line        |
+   |---|----------|----------|------------------------------|------------------|
+   | 1 | CRITICAL | security | Hardcoded API key            | src/config.ts:12 |
+   | 2 | HIGH     | code     | Missing null check           | src/api.ts:42    |
+   | 3 | MEDIUM   | code     | Potential race condition     | src/db.ts:18     |
+   ```
+5. **STOP if any CRITICAL issues** — these must be fixed before push
+6. For HIGH issues: ask user whether to fix now or proceed
+7. For MEDIUM/LOW: note them but continue
+
+**Rationale**: Local review is instant and free (no CI minutes). Catches ~80% of issues that CI reviewers would find, reducing iteration cycles.
 
 ## Phase 1: Push & Create PR
 
@@ -40,16 +111,63 @@ $ARGUMENTS can be:
 
 ## Phase 2: Wait for Reviews
 
-1. Run `gh pr checks <number> --watch` — blocks until CI completes
-   - If CI fails: report failing checks and STOP (user must fix CI manually)
-2. Wait 30 seconds for review bots to post comments
-3. Fetch review comments:
+1. **Identify checks to ignore** (from `--ignore-checks` or auto-detected):
+   ```bash
+   # Auto-detect stuck Claude review (no ANTHROPIC_API_KEY configured)
+   # These checks will hang forever without the secret
+   STUCK_CHECKS=""
+   gh pr checks <number> 2>&1 | while read line; do
+     if echo "$line" | grep -qE "claude.*pending"; then
+       # Check if it's been pending > 60 seconds with no status URL
+       STUCK_CHECKS="$STUCK_CHECKS,claude-review"
+     fi
+   done
+   ```
+
+2. **Wait for CI with timeout**:
+   ```bash
+   # Filter out known-stuck checks
+   IGNORE_PATTERN="claude-review|claude-code"  # Add user --ignore-checks here
+
+   # Poll checks every 30s, timeout after 10 minutes for stuck checks
+   TIMEOUT=600
+   START=$(date +%s)
+   while true; do
+     CHECKS=$(gh pr checks <number> 2>&1)
+     PENDING=$(echo "$CHECKS" | grep -vE "$IGNORE_PATTERN" | grep -c "pending" || echo 0)
+     FAILED=$(echo "$CHECKS" | grep -vE "$IGNORE_PATTERN" | grep -c "fail" || echo 0)
+
+     if [ "$FAILED" -gt 0 ]; then
+       echo "CI FAILED:"
+       echo "$CHECKS" | grep fail
+       # STOP - user must fix CI manually
+       exit 1
+     fi
+
+     if [ "$PENDING" -eq 0 ]; then
+       echo "All required checks passed"
+       break
+     fi
+
+     ELAPSED=$(($(date +%s) - START))
+     if [ "$ELAPSED" -gt "$TIMEOUT" ]; then
+       echo "Warning: Timeout waiting for checks. Proceeding with passed checks."
+       break
+     fi
+
+     sleep 30
+   done
+   ```
+
+3. If CI fails (excluding ignored checks): report failing checks and STOP
+4. Wait 30 seconds for review bots to post comments
+5. Fetch review comments:
    ```
    gh api repos/{owner}/{repo}/pulls/{number}/reviews
    gh api repos/{owner}/{repo}/pulls/{number}/comments
    ```
-4. If zero review comments → skip to Phase 5
-5. Otherwise → proceed to Phase 3
+6. If zero review comments → skip to Phase 5
+7. Otherwise → proceed to Phase 3
 
 ## Phase 3: Triage Comments
 
