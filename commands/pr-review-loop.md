@@ -14,12 +14,21 @@ $ARGUMENTS can be:
 
 1. Run `gh auth status` — STOP if not authenticated
 2. Detect current branch and repo: `git rev-parse --abbrev-ref HEAD`, `gh repo view --json nameWithOwner -q .nameWithOwner`
-3. STOP with error if:
-   - Current branch equals the base branch
-   - On a protected branch (`main` or `master`)
-   - Worktree is dirty (`git status --porcelain` is non-empty)
-   - No commits ahead of base (`git log <base>..HEAD --oneline` is empty)
-4. Show summary to user:
+3. Check for blockers:
+   - **Worktree dirty** (`git status --porcelain` non-empty) → STOP
+   - **No commits ahead** (`git log origin/<base>..HEAD` empty) → STOP
+   - **On protected branch** (`main` or `master`) with commits ahead → **Auto-create branch** (see below)
+4. **Auto-branch creation** (when on main/master with unpushed commits):
+   - Analyze commit messages to extract key themes (feat, fix, refactor, ci, etc.)
+   - Generate branch name: `<type>/<2-4-word-summary>` (e.g., `feature/med-capacity-ci-review`)
+   - Execute:
+     ```bash
+     git branch <new-branch>
+     git reset --hard origin/main
+     git checkout <new-branch>
+     ```
+   - Report: "Created branch `<new-branch>` from commits on main"
+5. Show summary to user:
    ```
    REPO:   owner/repo
    BRANCH: feature-branch
