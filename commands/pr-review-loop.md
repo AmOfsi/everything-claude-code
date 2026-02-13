@@ -9,6 +9,8 @@ $ARGUMENTS can be:
 - `<branch-name>` - Custom base branch
 - `--skip-create` - Assume PR already exists
 - `--no-merge` - Stop after reviews are clean, don't merge
+- `--ignore-checks <name,...>` - Skip specific CI checks (e.g., `--ignore-checks claude-review,slow-test`)
+- `--skip-quality-gates` - Skip Phase 0.25 (test-coverage, docs update)
 
 ## Phase 0: Pre-flight
 
@@ -36,6 +38,35 @@ $ARGUMENTS can be:
    AHEAD:  3 commits
    ```
 5. Ask user to confirm before proceeding
+
+## Phase 0.25: Quality Gates (unless --skip-quality-gates)
+
+Run quality assurance checks BEFORE code review. This ensures tests pass and docs are current.
+
+1. **Test Coverage Check**:
+   - Detect test framework: `npm test`, `pytest`, `go test`, `dotnet test`
+   - Run tests with coverage: `npm test -- --coverage`, `pytest --cov`, etc.
+   - Parse coverage report
+   - If coverage < 80%:
+     - List under-covered files
+     - Ask user: "Coverage is X%. Generate missing tests?" (Y/N)
+     - If Y: Use **tdd-guide** agent to generate tests for under-covered files
+     - Re-run tests to verify
+
+2. **Documentation Sync**:
+   - Check if `docs/CODEMAPS/` exists — if so, run `/update-codemaps`
+   - Check if README mentions APIs that changed — flag for review
+   - Check `.env.example` matches code usage
+
+3. **Show quality summary**:
+   ```
+   QUALITY GATES:
+   ✓ Tests:     935 pass, 4 skip (98.2% coverage)
+   ✓ Docs:      CODEMAPS updated
+   ⚠ Coverage:  src/api/auth.ts at 72% (below 80%)
+   ```
+
+4. If any CRITICAL issues (tests failing, build broken): **STOP**
 
 ## Phase 0.5: Local Pre-Push Review
 
@@ -80,16 +111,63 @@ Run local agent reviews BEFORE pushing. Catches issues faster and cheaper than C
 
 ## Phase 2: Wait for Reviews
 
-1. Run `gh pr checks <number> --watch` — blocks until CI completes
-   - If CI fails: report failing checks and STOP (user must fix CI manually)
-2. Wait 30 seconds for review bots to post comments
-3. Fetch review comments:
+1. **Identify checks to ignore** (from `--ignore-checks` or auto-detected):
+   ```bash
+   # Auto-detect stuck Claude review (no ANTHROPIC_API_KEY configured)
+   # These checks will hang forever without the secret
+   STUCK_CHECKS=""
+   gh pr checks <number> 2>&1 | while read line; do
+     if echo "$line" | grep -qE "claude.*pending"; then
+       # Check if it's been pending > 60 seconds with no status URL
+       STUCK_CHECKS="$STUCK_CHECKS,claude-review"
+     fi
+   done
+   ```
+
+2. **Wait for CI with timeout**:
+   ```bash
+   # Filter out known-stuck checks
+   IGNORE_PATTERN="claude-review|claude-code"  # Add user --ignore-checks here
+
+   # Poll checks every 30s, timeout after 10 minutes for stuck checks
+   TIMEOUT=600
+   START=$(date +%s)
+   while true; do
+     CHECKS=$(gh pr checks <number> 2>&1)
+     PENDING=$(echo "$CHECKS" | grep -vE "$IGNORE_PATTERN" | grep -c "pending" || echo 0)
+     FAILED=$(echo "$CHECKS" | grep -vE "$IGNORE_PATTERN" | grep -c "fail" || echo 0)
+
+     if [ "$FAILED" -gt 0 ]; then
+       echo "CI FAILED:"
+       echo "$CHECKS" | grep fail
+       # STOP - user must fix CI manually
+       exit 1
+     fi
+
+     if [ "$PENDING" -eq 0 ]; then
+       echo "All required checks passed"
+       break
+     fi
+
+     ELAPSED=$(($(date +%s) - START))
+     if [ "$ELAPSED" -gt "$TIMEOUT" ]; then
+       echo "Warning: Timeout waiting for checks. Proceeding with passed checks."
+       break
+     fi
+
+     sleep 30
+   done
+   ```
+
+3. If CI fails (excluding ignored checks): report failing checks and STOP
+4. Wait 30 seconds for review bots to post comments
+5. Fetch review comments:
    ```
    gh api repos/{owner}/{repo}/pulls/{number}/reviews
    gh api repos/{owner}/{repo}/pulls/{number}/comments
    ```
-4. If zero review comments → skip to Phase 5
-5. Otherwise → proceed to Phase 3
+6. If zero review comments → skip to Phase 5
+7. Otherwise → proceed to Phase 3
 
 ## Phase 3: Triage Comments
 
