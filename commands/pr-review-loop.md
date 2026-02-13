@@ -28,6 +28,37 @@ $ARGUMENTS can be:
    ```
 5. Ask user to confirm before proceeding
 
+## Phase 0.5: Local Pre-Push Review
+
+Run local agent reviews BEFORE pushing. Catches issues faster and cheaper than CI.
+
+1. Get diff for review: `git diff <base>...HEAD`
+2. Launch **two agents in parallel** using the Task tool:
+   - **code-reviewer**: Code quality, bugs, logic errors
+   - **security-reviewer**: Security vulnerabilities, secrets, injection
+3. Each agent reviews the diff and returns findings as:
+   ```
+   CRITICAL: [issue] — File:Line — Must fix before push
+   HIGH:     [issue] — File:Line — Should fix
+   MEDIUM:   [issue] — File:Line — Consider fixing
+   LOW:      [issue] — File:Line — Optional improvement
+   ```
+4. Aggregate findings into triage table:
+   ```
+   LOCAL REVIEW (pre-push):
+
+   | # | Severity | Agent    | Issue                        | File:Line        |
+   |---|----------|----------|------------------------------|------------------|
+   | 1 | CRITICAL | security | Hardcoded API key            | src/config.ts:12 |
+   | 2 | HIGH     | code     | Missing null check           | src/api.ts:42    |
+   | 3 | MEDIUM   | code     | Potential race condition     | src/db.ts:18     |
+   ```
+5. **STOP if any CRITICAL issues** — these must be fixed before push
+6. For HIGH issues: ask user whether to fix now or proceed
+7. For MEDIUM/LOW: note them but continue
+
+**Rationale**: Local review is instant and free (no CI minutes). Catches ~80% of issues that CI reviewers would find, reducing iteration cycles.
+
 ## Phase 1: Push & Create PR
 
 1. `git push -u origin <branch>`
