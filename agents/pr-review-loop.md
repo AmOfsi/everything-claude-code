@@ -2,7 +2,7 @@
 name: pr-review-loop
 description: Autonomous PR review loop agent. Runs in isolated worktree, handles CI waiting, review triage, and fixes. Communicates via Ralph Mail for user decisions.
 tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "Task"]
-model: haiku
+model: sonnet
 ---
 
 # PR Review Loop Agent
@@ -141,7 +141,7 @@ rm "$RESPONSE_FILE"
 
 ## Sub-Agent Delegation
 
-This orchestrator (Haiku) delegates heavy work to specialized agents:
+This orchestrator delegates heavy work to specialized agents. You **MUST** use the Task tool for each delegation — do NOT inline the work yourself:
 
 | Task | Sub-Agent | Model |
 |------|-----------|-------|
@@ -218,7 +218,9 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
 fi
 ```
 
-**Step 1: Code Review**
+**Step 1: Code Review** (MANDATORY)
+
+You **MUST** use the Task tool to spawn a `code-reviewer` agent. Do NOT review code yourself.
 ```
 Task({
   subagent_type: "code-reviewer",
@@ -234,7 +236,22 @@ Task({
   - Use `build-error-resolver` agent to fix them
   - Commit fixes: `git commit -am "fix: address pre-flight review issues"`
 
-**Step 3: Documentation Sync** (if code changes warrant it)
+**Step 3: Test Coverage Check** (MANDATORY)
+
+You **MUST** use the Task tool to spawn a `tdd-guide` agent. Do NOT skip this step.
+```
+Task({
+  subagent_type: "tdd-guide",
+  prompt: "Check test coverage for changes on branch <branch> compared to <base>.
+           Working directory: $WORKTREE_DIR
+           Verify: existing tests pass, coverage >= 80% for changed files.
+           If tests are missing, write them. If no test framework exists, note it but don't block."
+})
+```
+
+**Step 4: Documentation Sync** (MANDATORY unless changes are docs-only)
+
+You **MUST** use the Task tool to spawn a `doc-updater` agent. Do NOT skip this step unless the PR is docs-only.
 ```
 Task({
   subagent_type: "doc-updater",
@@ -245,7 +262,7 @@ Task({
 })
 ```
 
-**Step 4: Security Review** (for sensitive changes)
+**Step 5: Security Review** (for sensitive changes)
 - If changes touch auth, API endpoints, user input handling, or secrets:
 ```
 Task({
@@ -257,7 +274,7 @@ Task({
 ```
 - Fix any CRITICAL security issues before proceeding
 
-**Step 5: Final Commit**
+**Step 6: Final Commit**
 - If any fixes were made: `git commit -am "chore: pre-flight fixes"`
 - Verify build passes: run project's build/test command
 
@@ -375,7 +392,7 @@ If CI fails: send BLOCKED mail to USER, wait for response.
 ### Phase 6: Merge
 
 1. Verify all checks pass
-2. Send MERGE_CONFIRM mail with **explicit button guidance**, wait for response:
+2. Send MERGE_CONFIRM mail with **explicit button guidance** and **Pre-flight Summary**, wait for response:
 ```bash
 cat > "$ORIGINAL_REPO/ralph-outbox/pr-review-<pr_number>-merge.md" << 'MAIL_EOF'
 # PR Review: Ready to Merge
@@ -394,6 +411,20 @@ cat > "$ORIGINAL_REPO/ralph-outbox/pr-review-<pr_number>-merge.md" << 'MAIL_EOF'
 
 All CI checks pass. PR is ready for squash merge.
 
+## Pre-flight Summary
+
+| Step | Status | Detail |
+|------|--------|--------|
+| Gitignore Audit | $PREFLIGHT_GITIGNORE |
+| Code Review | $PREFLIGHT_CODE_REVIEW |
+| Test Coverage | $PREFLIGHT_TEST |
+| Doc Update | $PREFLIGHT_DOCS |
+| Security Review | $PREFLIGHT_SECURITY |
+
+**Iterations**: N review cycles, N comments addressed
+
+---
+
 **Green button = MERGE the PR now**
 **Yellow button = HOLD (keep PR open, don't merge yet)**
 **Red button = ABORT (cancel PR review entirely)**
@@ -403,7 +434,7 @@ MAIL_EOF
 
 3. Parse response: `SKIP` or `MERGE` = proceed, `ACTIONABLE` or `HOLD` = wait, `ABORT` = cancel
 4. If approved: `gh pr merge <number> --squash --delete-branch`
-4. **Sync user's local main** (so they can build on merged work immediately):
+5. **Sync user's local main** (so they can build on merged work immediately):
    ```bash
    # Fast-forward user's local main/master WITHOUT checkout
    # This is safe even if the user is on a different branch
@@ -413,8 +444,51 @@ MAIL_EOF
      echo "Synced local $BASE_BRANCH to include merged PR" || \
      echo "Warning: Could not fast-forward local $BASE_BRANCH (user may be on it with changes)"
    ```
-5. Send COMPLETE mail (include note: "Local $BASE_BRANCH synced to include this PR")
-6. **CLEANUP WORKTREE**
+6. Send COMPLETE mail with Pre-flight Summary:
+```bash
+cat > "$ORIGINAL_REPO/ralph-outbox/pr-review-<pr_number>-complete.md" << 'MAIL_EOF'
+# PR Review: Complete
+
+**From**: pr-review-loop-agent
+**To**: USER
+**Date**: YYYY-MM-DD HH:MM UTC
+**PR**: <repo>#<number>
+**Action-Required**: false
+
+---
+
+## Merged Successfully
+
+PR #<number> has been squash-merged and branch deleted.
+
+Local `$BASE_BRANCH` synced to include this PR.
+
+## Pre-flight Summary
+
+| Step | Status | Detail |
+|------|--------|--------|
+| Gitignore Audit | $PREFLIGHT_GITIGNORE |
+| Code Review | $PREFLIGHT_CODE_REVIEW |
+| Test Coverage | $PREFLIGHT_TEST |
+| Doc Update | $PREFLIGHT_DOCS |
+| Security Review | $PREFLIGHT_SECURITY |
+
+**Iterations**: N review cycles, N comments addressed
+**Skip reasons** (if any): <reasons>
+MAIL_EOF
+```
+7. **CLEANUP WORKTREE**
+
+#### Pre-flight Tracking Variables
+
+As you complete each Phase 1 step, record the result in a tracking variable:
+- `PREFLIGHT_GITIGNORE="RAN|Entries added: 2"` or `PREFLIGHT_GITIGNORE="SKIPPED|Already clean"`
+- `PREFLIGHT_CODE_REVIEW="RAN|Issues: 0 CRITICAL, 1 HIGH, 2 MEDIUM"` or `PREFLIGHT_CODE_REVIEW="SKIPPED|docs-only"`
+- `PREFLIGHT_TEST="RAN|Coverage: 85%"` or `PREFLIGHT_TEST="SKIPPED|no test framework"`
+- `PREFLIGHT_DOCS="RAN|Updated: CLAUDE.md, README.md"` or `PREFLIGHT_DOCS="SKIPPED|trivial changes"`
+- `PREFLIGHT_SECURITY="RAN|Issues: 0"` or `PREFLIGHT_SECURITY="SKIPPED|no sensitive changes"`
+
+Include these in the mail templates so the user can audit which gates ran vs were skipped.
 
 ## Error Handling
 
