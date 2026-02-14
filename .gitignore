@@ -34,3 +34,4 @@ marketing/
 # Ralph Mail (transient cross-session communication)
 ralph-inbox/
 ralph-outbox/
+ralph-archive/

@@ -68,7 +68,15 @@ Please deploy when convenient.
 
 1. **Create** message in your `ralph-outbox/`
 2. **Delivered** by mail-router daemon (5s poll) to recipient's `ralph-inbox/`
-3. **Acted on** by recipient session
-4. **Archived** automatically after 30 minutes to keep context clean
+3. **Enriched** by local LLM (lgrep code search + ollama) — creates `.enriched.md` companion
+4. **Read** by recipient session — check both `.md` and `.enriched.md` files
+5. **Marked read** — rename to `.resolved-<original-name>` when acted on
+6. **Archived** — resolved mail gets archived; unread mail stays for 24 hours
 
-No manual intervention needed!
+## Reading Mail (for Claude sessions)
+
+When checking `ralph-inbox/`:
+1. Read all `.md` files (skip `.resolved-*` hidden files — those are already processed)
+2. Check for `.enriched.md` companions — these have pre-gathered code context from lgrep
+3. After acting on a message, rename it: `mv file.md .resolved-file.md`
+4. NEVER delete mail — always rename to `.resolved-*` so it can be archived properly
