@@ -50,13 +50,17 @@ git worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
 
 ## Mail Protocol
 
+**IMPORTANT**: Write mail to the ORIGINAL repo path (passed in the prompt), NOT the worktree path. The `user-notify` daemon only scans `~/projects/*/ralph-outbox/`, not worktrees.
+
 ### Sending Mail (Agent → User)
 
 Every time you need user input, do BOTH steps:
 
 **Step A — Write the mail file:**
 ```bash
-cat > "<repo>/ralph-outbox/pr-review-<pr_number>-<action>.md" << 'MAIL_EOF'
+# Use the ORIGINAL repo path from the prompt, NOT the worktree path
+ORIGINAL_REPO="<original_repo_from_prompt>"
+cat > "$ORIGINAL_REPO/ralph-outbox/pr-review-<pr_number>-<action>.md" << 'MAIL_EOF'
 # PR Review: <action>
 
 **From**: pr-review-loop-agent
@@ -145,7 +149,58 @@ All critical decisions (triage, merge) route back to USER via mail.
 3. Set gh default: `gh repo set-default <owner/repo>`
 4. Verify gh auth: `gh auth status`
 
-### Phase 1: Push & Create PR
+### Phase 1: Pre-flight Quality Gates
+
+Run quality checks BEFORE pushing to catch issues early. All work happens in worktree.
+
+**Step 1: Code Review**
+```
+Task({
+  subagent_type: "code-reviewer",
+  prompt: "Review all changes on branch <branch> compared to <base>.
+           Working directory: $WORKTREE_DIR
+           Focus on: bugs, security issues, code style, test coverage gaps.
+           Output: list of issues with severity (CRITICAL, HIGH, MEDIUM, LOW)"
+})
+```
+
+**Step 2: Fix Critical/High Issues**
+- If code-reviewer found CRITICAL or HIGH issues:
+  - Use `build-error-resolver` agent to fix them
+  - Commit fixes: `git commit -am "fix: address pre-flight review issues"`
+
+**Step 3: Documentation Sync** (if code changes warrant it)
+```
+Task({
+  subagent_type: "doc-updater",
+  prompt: "Check if documentation needs updating for changes on <branch>.
+           Working directory: $WORKTREE_DIR
+           Update: README, CLAUDE.md, codemaps if affected.
+           Skip if changes are trivial (typos, comments, minor refactors)."
+})
+```
+
+**Step 4: Security Review** (for sensitive changes)
+- If changes touch auth, API endpoints, user input handling, or secrets:
+```
+Task({
+  subagent_type: "security-reviewer",
+  prompt: "Security review for changes on <branch>.
+           Working directory: $WORKTREE_DIR
+           Check: OWASP Top 10, secrets exposure, injection vulnerabilities."
+})
+```
+- Fix any CRITICAL security issues before proceeding
+
+**Step 5: Final Commit**
+- If any fixes were made: `git commit -am "chore: pre-flight fixes"`
+- Verify build passes: run project's build/test command
+
+**Skip Conditions:**
+- If `--skip-preflight` flag was passed, skip to Phase 2
+- If changes are docs-only (*.md files), skip code review
+
+### Phase 2: Push & Create PR
 
 All commands run inside worktree:
 
@@ -153,20 +208,20 @@ All commands run inside worktree:
 2. Create PR if not exists: `cd "$WORKTREE_DIR" && gh pr create --fill --base <base>`
 3. Store PR number
 
-### Phase 2: Wait for CI
+### Phase 3: Wait for CI
 
 1. Poll `gh pr checks <number>` every 30s from worktree
 2. Filter out known-stuck checks (claude-review, claude-code)
 3. Timeout after 10 minutes for stuck checks
 4. If CI fails: send BLOCKED mail, wait for response
 
-### Phase 3: Fetch & Triage Reviews
+### Phase 4: Fetch & Triage Reviews
 
 1. Fetch review comments from GitHub API:
    ```bash
    REVIEWS=$(gh api repos/{owner}/{repo}/pulls/{number}/comments --jq 'length')
    ```
-2. **If no comments after 60 seconds of CI passing: skip to Phase 5**
+2. **If no comments after 60 seconds of CI passing: skip to Phase 6**
    - This handles the case where no reviewers are configured
    - Don't wait forever for reviews that will never come
 3. If comments exist, build triage table
@@ -174,14 +229,14 @@ All commands run inside worktree:
 5. **WAIT** for response file (poll every 30s, timeout 1 hour)
 6. Parse user decisions
 
-### Phase 4: Fix & Push
+### Phase 5: Fix & Push
 
 1. Fix ACTIONABLE comments (inside worktree only)
 2. `cd "$WORKTREE_DIR" && git commit -am "chore(pr-review): fix iteration N"`
 3. `cd "$WORKTREE_DIR" && git push`
-4. Loop back to Phase 2
+4. Loop back to Phase 3
 
-### Phase 5: Merge
+### Phase 6: Merge
 
 1. Verify all checks pass
 2. Send MERGE_CONFIRM mail, wait for response
