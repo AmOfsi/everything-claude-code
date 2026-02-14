@@ -14,9 +14,48 @@ $ARGUMENTS can be:
 
 ## Behavior
 
-This command does TWO things:
-1. **Prepare** (quick, in main session) — branch creation + commit if needed
-2. **Spawn** (background agent) — fire and forget
+This command does THREE things:
+1. **Safety checks** — prevent conflicts and mistakes
+2. **Prepare** (quick, in main session) — branch creation + commit if needed
+3. **Spawn** (background agent) — fire and forget
+
+### Step 0: Safety Checks
+
+```bash
+REPO=$(git rev-parse --show-toplevel)
+PROJECT_NAME=$(basename "$REPO")
+
+# Check 1: Warn if another PR loop worktree exists for this repo
+EXISTING_WORKTREES=$(git worktree list | grep ".worktrees" | wc -l)
+if [[ "$EXISTING_WORKTREES" -gt 0 ]]; then
+    echo "⚠️  WARNING: PR loop worktree already exists for this repo."
+    git worktree list | grep ".worktrees"
+    echo ""
+    echo "Options:"
+    echo "  1. Wait for existing PR to finish"
+    echo "  2. Clean up stale worktree: git worktree remove <path> --force"
+    echo "  3. Continue anyway (may cause conflicts)"
+    # Don't block, just warn - user can decide
+fi
+
+# Check 2: Fetch latest to ensure we know remote state
+git fetch origin --quiet 2>/dev/null || echo "⚠️  Could not fetch from origin (offline?)"
+
+# Check 3: If on main, check if it's behind origin
+CURRENT=$(git rev-parse --abbrev-ref HEAD)
+if [[ "$CURRENT" == "main" || "$CURRENT" == "master" ]]; then
+    LOCAL=$(git rev-parse HEAD)
+    REMOTE=$(git rev-parse origin/$CURRENT 2>/dev/null || echo "")
+    if [[ -n "$REMOTE" && "$LOCAL" != "$REMOTE" ]]; then
+        BEHIND=$(git rev-list --count HEAD..origin/$CURRENT)
+        if [[ "$BEHIND" -gt 0 ]]; then
+            echo "ℹ️  Your $CURRENT is $BEHIND commit(s) behind origin."
+            echo "   New branch will be based on your local $CURRENT."
+            echo "   After PR merges, remember: git pull origin $CURRENT"
+        fi
+    fi
+fi
+```
 
 ### Step 1: Prepare (in main session)
 

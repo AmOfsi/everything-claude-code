@@ -202,11 +202,35 @@ Task({
 
 ### Phase 2: Push & Create PR
 
-All commands run inside worktree:
+All commands run inside worktree.
 
-1. `cd "$WORKTREE_DIR" && git push -u origin <branch>`
+**Step 1: Auto-rebase onto latest base (handles concurrent PRs)**
+```bash
+cd "$WORKTREE_DIR"
+git fetch origin <base>
+
+# Check if rebase is needed
+BEHIND=$(git rev-list --count HEAD..origin/<base>)
+if [[ "$BEHIND" -gt 0 ]]; then
+    echo "Branch is $BEHIND commits behind origin/<base>, rebasing..."
+    git rebase origin/<base>
+
+    # If rebase fails (conflict), notify user and stop
+    if [[ $? -ne 0 ]]; then
+        git rebase --abort
+        # Send BLOCKED mail about merge conflict
+        # User must resolve manually
+        exit 1
+    fi
+fi
+```
+
+**Step 2: Push and create PR**
+1. `cd "$WORKTREE_DIR" && git push -u origin <branch> --force-with-lease`
 2. Create PR if not exists: `cd "$WORKTREE_DIR" && gh pr create --fill --base <base>`
 3. Store PR number
+
+**Note**: Uses `--force-with-lease` to safely push after rebase while preventing overwrites if someone else pushed.
 
 ### Phase 3: Wait for CI
 
@@ -279,8 +303,16 @@ If CI fails: send BLOCKED mail to USER, wait for response.
 
 1. Fix ACTIONABLE comments (inside worktree only)
 2. `cd "$WORKTREE_DIR" && git commit -am "chore(pr-review): fix iteration N"`
-3. `cd "$WORKTREE_DIR" && git push`
-4. Loop back to Phase 3
+3. **Auto-rebase if main moved** (same as Phase 2 Step 1)
+   ```bash
+   git fetch origin <base>
+   BEHIND=$(git rev-list --count HEAD..origin/<base>)
+   if [[ "$BEHIND" -gt 0 ]]; then
+       git rebase origin/<base> || { git rebase --abort; exit 1; }
+   fi
+   ```
+4. `cd "$WORKTREE_DIR" && git push --force-with-lease`
+5. Loop back to Phase 3
 
 ### Phase 6: Merge
 
