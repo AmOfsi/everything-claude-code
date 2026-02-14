@@ -234,54 +234,47 @@ fi
 
 ### Phase 3: Wait for CI
 
-Poll for CI checks to complete. Use this exact script:
+Poll for CI checks to complete. **COPY THIS SCRIPT EXACTLY** - do not improvise:
 
 ```bash
 cd "$WORKTREE_DIR"
 PR_NUMBER=<number>
-TIMEOUT=600  # 10 minutes
+TIMEOUT=600
 START=$(date +%s)
 
 while true; do
-    # Get check statuses (exclude known-stuck checks)
-    CHECKS=$(gh pr checks "$PR_NUMBER" 2>/dev/null | grep -v "claude-review\|claude-code" || echo "")
+    # Get check statuses, parse with awk (column 2 is status)
+    # Exclude claude-review/claude-code which may be stuck
+    RAW=$(gh pr checks "$PR_NUMBER" 2>/dev/null || echo "")
+    CHECKS=$(echo "$RAW" | grep -v "claude-review\|claude-code")
 
-    # Count pending and failed (handle empty output)
-    PENDING=$(echo "$CHECKS" | grep -c "pending\|queued\|in_progress" || echo "0")
-    FAILED=$(echo "$CHECKS" | grep -c "fail\|error\|cancelled" || echo "0")
-    TOTAL=$(echo "$CHECKS" | grep -c "pass\|fail\|pending" || echo "0")
+    # Count by status column (column 2 in tab-separated output)
+    PASS=$(echo "$CHECKS" | awk '$2=="pass"' | wc -l | tr -d ' ')
+    FAIL=$(echo "$CHECKS" | awk '$2~/fail|error|cancelled/' | wc -l | tr -d ' ')
+    PEND=$(echo "$CHECKS" | awk '$2~/pending|queued|in_progress/' | wc -l | tr -d ' ')
+    TOTAL=$((PASS + FAIL + PEND))
 
-    # Trim whitespace (prevents "0\n0" bug)
-    PENDING=$(echo "$PENDING" | tr -d '[:space:]')
-    FAILED=$(echo "$FAILED" | tr -d '[:space:]')
-    TOTAL=$(echo "$TOTAL" | tr -d '[:space:]')
+    echo "[CI] pass=$PASS fail=$FAIL pending=$PEND total=$TOTAL"
 
-    echo "[CI] Total: $TOTAL, Pending: $PENDING, Failed: $FAILED"
-
-    # Check for failure
-    if [[ "$FAILED" -gt 0 ]]; then
-        echo "CI failed!"
-        # Send BLOCKED mail and wait for response
+    # Exit conditions (check in order)
+    if [[ "$FAIL" -gt 0 ]]; then
+        echo "CI FAILED"
         break
     fi
-
-    # Check for completion (all passed)
-    if [[ "$TOTAL" -gt 0 && "$PENDING" -eq 0 ]]; then
-        echo "CI passed!"
+    if [[ "$TOTAL" -gt 0 && "$PEND" -eq 0 ]]; then
+        echo "CI PASSED"
         break
     fi
-
-    # Check timeout
-    ELAPSED=$(($(date +%s) - START))
-    if [[ "$ELAPSED" -gt "$TIMEOUT" ]]; then
-        echo "CI timeout after ${TIMEOUT}s"
-        # Proceed anyway - checks may be stuck
+    if [[ $(($(date +%s) - START)) -gt "$TIMEOUT" ]]; then
+        echo "CI TIMEOUT"
         break
     fi
 
     sleep 30
 done
 ```
+
+**IMPORTANT**: The exit condition is `TOTAL > 0 && PEND == 0`. When all checks pass, PEND=0 so the loop exits.
 
 If CI fails: send BLOCKED mail to USER, wait for response.
 
