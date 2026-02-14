@@ -78,18 +78,26 @@ MAIL_EOF
 
 **Step B — Send desktop notification with sound immediately after:**
 ```bash
-# Visual notification
-notify-send -u critical -i mail-message-new \
-  "PR Review: <action>" \
-  "PR #<number> needs your input. Check ralph-outbox or run: pr-respond <project> <number> --help" \
-  2>/dev/null || true
+# Full path to powershell.exe (systemd/subagent shells lack Windows interop PATH)
+POWERSHELL="/mnt/c/windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+[ -x "$POWERSHELL" ] || POWERSHELL="powershell.exe"
 
-# Audio notification (WSL-compatible)
 if grep -qi microsoft /proc/version 2>/dev/null; then
-    # WSL: Use Windows sounds via PowerShell
-    powershell.exe -c "(New-Object Media.SoundPlayer 'C:\Windows\Media\notify.wav').PlaySync()" 2>/dev/null &
+    # WSL: Toast notification (persists in notification center)
+    "$POWERSHELL" -NoProfile -c "
+        [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+        [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime] | Out-Null
+        \$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+        \$xml.LoadXml('<toast><visual><binding template=\"ToastGeneric\"><text>PR Review: <action></text><text>PR #<number> needs your input</text></binding></visual><audio src=\"ms-winsoundevent:Notification.Default\"/></toast>')
+        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Ralph Mail').Show([Windows.UI.Notifications.ToastNotification]::new(\$xml))
+    " 2>/dev/null || true
+    # Sound fallback if Toast audio didn't play
+    "$POWERSHELL" -NoProfile -c "(New-Object Media.SoundPlayer 'C:\Windows\Media\notify.wav').PlaySync()" 2>/dev/null &
 else
-    # Native Linux: Try common sound players
+    # Native Linux
+    notify-send -u critical -i mail-message-new \
+      "PR Review: <action>" \
+      "PR #<number> needs your input" 2>/dev/null || true
     paplay /usr/share/sounds/freedesktop/stereo/message.oga 2>/dev/null || \
     aplay /usr/share/sounds/sound-icons/prompt.wav 2>/dev/null || true
 fi
@@ -111,8 +119,15 @@ while true; do
     ELAPSED=$(($(date +%s) - START))
     if [ "$ELAPSED" -gt "$TIMEOUT" ]; then
         # Send timeout notification
-        notify-send -u critical "PR Review: TIMEOUT" \
-          "PR #<number> timed out waiting for response" 2>/dev/null || true
+        POWERSHELL="/mnt/c/windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+        [ -x "$POWERSHELL" ] || POWERSHELL="powershell.exe"
+        "$POWERSHELL" -NoProfile -c "
+            [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+            [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime] | Out-Null
+            \$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+            \$xml.LoadXml('<toast><visual><binding template=\"ToastGeneric\"><text>PR Review: TIMEOUT</text><text>PR #<number> timed out waiting for response</text></binding></visual><audio src=\"ms-winsoundevent:Notification.Default\"/></toast>')
+            [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Ralph Mail').Show([Windows.UI.Notifications.ToastNotification]::new(\$xml))
+        " 2>/dev/null || true
         exit 1
     fi
     sleep 30
@@ -152,6 +167,56 @@ All critical decisions (triage, merge) route back to USER via mail.
 ### Phase 1: Pre-flight Quality Gates
 
 Run quality checks BEFORE pushing to catch issues early. All work happens in worktree.
+
+**Step 0: Gitignore Audit**
+
+Check for untracked files that should be ignored. Fix BEFORE code review so reviewers don't flag them.
+
+```bash
+cd "$WORKTREE_DIR"
+
+# Common patterns that should ALWAYS be gitignored
+PATTERNS=(
+  "ralph-inbox/"
+  "ralph-outbox/"
+  "ralph-archive/"
+  "mail/"
+  ".vscode/"
+  "*.log"
+  "__pycache__/"
+  "node_modules/"
+  ".env"
+  ".env.local"
+  "*.tmp"
+  ".DS_Store"
+)
+
+# Check what's untracked
+UNTRACKED=$(git status --porcelain | grep '^??' | awk '{print $2}')
+
+MISSING=()
+for pattern in "${PATTERNS[@]}"; do
+  # Check if pattern is already in .gitignore
+  if ! grep -qxF "$pattern" .gitignore 2>/dev/null; then
+    # Check if any untracked file matches this pattern
+    clean_pattern="${pattern%/}"  # strip trailing slash for matching
+    if echo "$UNTRACKED" | grep -q "^${clean_pattern}"; then
+      MISSING+=("$pattern")
+    fi
+  fi
+done
+
+if [[ ${#MISSING[@]} -gt 0 ]]; then
+  echo "Adding missing .gitignore entries: ${MISSING[*]}"
+  echo "" >> .gitignore
+  echo "# Auto-added by pr-review-loop (transient/generated files)" >> .gitignore
+  for entry in "${MISSING[@]}"; do
+    echo "$entry" >> .gitignore
+  done
+  git add .gitignore
+  git commit -m "chore: update .gitignore with missing patterns"
+fi
+```
 
 **Step 1: Code Review**
 ```
@@ -312,8 +377,18 @@ If CI fails: send BLOCKED mail to USER, wait for response.
 1. Verify all checks pass
 2. Send MERGE_CONFIRM mail, wait for response
 3. If approved: `gh pr merge <number> --squash --delete-branch`
-4. Send COMPLETE mail
-5. **CLEANUP WORKTREE**
+4. **Sync user's local main** (so they can build on merged work immediately):
+   ```bash
+   # Fast-forward user's local main/master WITHOUT checkout
+   # This is safe even if the user is on a different branch
+   cd "$ORIGINAL_REPO"
+   BASE_BRANCH="<base>"  # main or master
+   git fetch origin "$BASE_BRANCH":"$BASE_BRANCH" 2>/dev/null && \
+     echo "Synced local $BASE_BRANCH to include merged PR" || \
+     echo "Warning: Could not fast-forward local $BASE_BRANCH (user may be on it with changes)"
+   ```
+5. Send COMPLETE mail (include note: "Local $BASE_BRANCH synced to include this PR")
+6. **CLEANUP WORKTREE**
 
 ## Error Handling
 
