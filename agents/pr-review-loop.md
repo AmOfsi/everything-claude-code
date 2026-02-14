@@ -375,8 +375,34 @@ If CI fails: send BLOCKED mail to USER, wait for response.
 ### Phase 6: Merge
 
 1. Verify all checks pass
-2. Send MERGE_CONFIRM mail, wait for response
-3. If approved: `gh pr merge <number> --squash --delete-branch`
+2. Send MERGE_CONFIRM mail with **explicit button guidance**, wait for response:
+```bash
+cat > "$ORIGINAL_REPO/ralph-outbox/pr-review-<pr_number>-merge.md" << 'MAIL_EOF'
+# PR Review: Ready to Merge
+
+**From**: pr-review-loop-agent
+**To**: USER
+**Date**: YYYY-MM-DD HH:MM UTC
+**PR**: <repo>#<number>
+**Action-Required**: true
+**Response-File**: <repo>/ralph-inbox/pr-review-<pr_number>-response.md
+**Dialog-Mode**: merge
+
+---
+
+## Ready to Merge
+
+All CI checks pass. PR is ready for squash merge.
+
+**Green button = MERGE the PR now**
+**Yellow button = HOLD (keep PR open, don't merge yet)**
+**Red button = ABORT (cancel PR review entirely)**
+MAIL_EOF
+```
+   Note: The `**Dialog-Mode**: merge` header tells user-notify to show merge-specific button labels. If the dialog doesn't support `-Mode` yet, the mail body itself clarifies what each button does.
+
+3. Parse response: `SKIP` or `MERGE` = proceed, `ACTIONABLE` or `HOLD` = wait, `ABORT` = cancel
+4. If approved: `gh pr merge <number> --squash --delete-branch`
 4. **Sync user's local main** (so they can build on merged work immediately):
    ```bash
    # Fast-forward user's local main/master WITHOUT checkout
