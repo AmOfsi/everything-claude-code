@@ -210,10 +210,56 @@ All commands run inside worktree:
 
 ### Phase 3: Wait for CI
 
-1. Poll `gh pr checks <number>` every 30s from worktree
-2. Filter out known-stuck checks (claude-review, claude-code)
-3. Timeout after 10 minutes for stuck checks
-4. If CI fails: send BLOCKED mail, wait for response
+Poll for CI checks to complete. Use this exact script:
+
+```bash
+cd "$WORKTREE_DIR"
+PR_NUMBER=<number>
+TIMEOUT=600  # 10 minutes
+START=$(date +%s)
+
+while true; do
+    # Get check statuses (exclude known-stuck checks)
+    CHECKS=$(gh pr checks "$PR_NUMBER" 2>/dev/null | grep -v "claude-review\|claude-code" || echo "")
+
+    # Count pending and failed (handle empty output)
+    PENDING=$(echo "$CHECKS" | grep -c "pending\|queued\|in_progress" || echo "0")
+    FAILED=$(echo "$CHECKS" | grep -c "fail\|error\|cancelled" || echo "0")
+    TOTAL=$(echo "$CHECKS" | grep -c "pass\|fail\|pending" || echo "0")
+
+    # Trim whitespace (prevents "0\n0" bug)
+    PENDING=$(echo "$PENDING" | tr -d '[:space:]')
+    FAILED=$(echo "$FAILED" | tr -d '[:space:]')
+    TOTAL=$(echo "$TOTAL" | tr -d '[:space:]')
+
+    echo "[CI] Total: $TOTAL, Pending: $PENDING, Failed: $FAILED"
+
+    # Check for failure
+    if [[ "$FAILED" -gt 0 ]]; then
+        echo "CI failed!"
+        # Send BLOCKED mail and wait for response
+        break
+    fi
+
+    # Check for completion (all passed)
+    if [[ "$TOTAL" -gt 0 && "$PENDING" -eq 0 ]]; then
+        echo "CI passed!"
+        break
+    fi
+
+    # Check timeout
+    ELAPSED=$(($(date +%s) - START))
+    if [[ "$ELAPSED" -gt "$TIMEOUT" ]]; then
+        echo "CI timeout after ${TIMEOUT}s"
+        # Proceed anyway - checks may be stuck
+        break
+    fi
+
+    sleep 30
+done
+```
+
+If CI fails: send BLOCKED mail to USER, wait for response.
 
 ### Phase 4: Fetch & Triage Reviews
 
