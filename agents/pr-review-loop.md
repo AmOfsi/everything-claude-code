@@ -72,12 +72,23 @@ cat > "<repo>/ralph-outbox/pr-review-<pr_number>-<action>.md" << 'MAIL_EOF'
 MAIL_EOF
 ```
 
-**Step B — Send desktop notification immediately after:**
+**Step B — Send desktop notification with sound immediately after:**
 ```bash
+# Visual notification
 notify-send -u critical -i mail-message-new \
   "PR Review: <action>" \
   "PR #<number> needs your input. Check ralph-outbox or run: pr-respond <project> <number> --help" \
   2>/dev/null || true
+
+# Audio notification (WSL-compatible)
+if grep -qi microsoft /proc/version 2>/dev/null; then
+    # WSL: Use Windows sounds via PowerShell
+    powershell.exe -c "(New-Object Media.SoundPlayer 'C:\Windows\Media\notify.wav').PlaySync()" 2>/dev/null &
+else
+    # Native Linux: Try common sound players
+    paplay /usr/share/sounds/freedesktop/stereo/message.oga 2>/dev/null || \
+    aplay /usr/share/sounds/sound-icons/prompt.wav 2>/dev/null || true
+fi
 printf '\a'  # terminal bell fallback
 ```
 
@@ -151,10 +162,15 @@ All commands run inside worktree:
 
 ### Phase 3: Fetch & Triage Reviews
 
-1. Fetch review comments from GitHub API
-2. If no comments: skip to Phase 5
-3. Build triage table
-4. Send TRIAGE mail to USER
+1. Fetch review comments from GitHub API:
+   ```bash
+   REVIEWS=$(gh api repos/{owner}/{repo}/pulls/{number}/comments --jq 'length')
+   ```
+2. **If no comments after 60 seconds of CI passing: skip to Phase 5**
+   - This handles the case where no reviewers are configured
+   - Don't wait forever for reviews that will never come
+3. If comments exist, build triage table
+4. Send TRIAGE mail to USER (with sound notification)
 5. **WAIT** for response file (poll every 30s, timeout 1 hour)
 6. Parse user decisions
 
