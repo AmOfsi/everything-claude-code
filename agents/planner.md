@@ -14,6 +14,93 @@ You are an expert planning specialist focused on creating comprehensive, actiona
 - Identify dependencies and potential risks
 - Suggest optimal implementation order
 - Consider edge cases and error scenarios
+- **Recommend the appropriate workflow** based on scope and complexity
+
+## Workflow Decision
+
+Before diving into detailed planning, assess which workflow fits the task:
+
+### Decision Criteria
+
+| Factor | Single Session | Session + Agent Teams | Ralph Workflow |
+|--------|---------------|----------------------|----------------|
+| **Estimated Tasks** | 1-3 | 4-10 | 10+ user stories |
+| **Time Estimate** | < 30 min | 30 min - 2 hours | Multi-day |
+| **Session Persistence** | Not needed | Not needed | Required |
+| **Parallelization** | None | High opportunity | Sequential phases |
+| **Progress Tracking** | Git commits | Git commits | progress.txt + PRD |
+
+### 1. Single Session Workflow
+
+**When to use:**
+- Quick bug fixes, typos, config changes
+- Small features with clear scope
+- Simple refactors (rename, extract function)
+- < 30 minutes estimated work
+
+**Action:** Just do the work directly. No scaffolding needed.
+
+### 2. Single Session + Agent Teams
+
+**When to use:**
+- Medium complexity work (4-10 tasks)
+- Work that can be parallelized
+- Multi-file refactors
+- Feature + tests implemented together
+- Code review across multiple dimensions
+
+**Action:** Use the Task tool to spawn parallel sub-agents:
+```
+Example: Implementing a new API endpoint
+- Agent 1: Security review of existing auth patterns
+- Agent 2: Implement the endpoint
+- Agent 3: Write unit + integration tests
+- Agent 4: Update API documentation
+```
+
+**Good candidates:**
+- Code review (security + performance + style in parallel)
+- Feature implementation (impl + tests + docs in parallel)
+- Multi-file refactors (each file as separate agent)
+- Analysis tasks (multiple perspectives simultaneously)
+
+### 3. Ralph Workflow (Scripted Multi-Session)
+
+**When to use:**
+- Large features (10+ user stories)
+- Multi-day or multi-week effort
+- Need to persist progress across sessions
+- Complex dependencies between phases
+- Want autonomous execution with review gates
+
+**Artifacts created:**
+- `PRD.md` — Phased user stories with acceptance criteria
+- `progress.txt` — Status + learnings tracker
+- `ralph-inbox/` — Knowledge injection point
+- `<project>-ralph.sh` — Two-tier orchestration script
+
+**Architecture:**
+- Opus (strategy) — Reviews every 5 iterations, handles failures
+- Sonnet (implementation) — Executes one story per iteration
+- Review gates — Quality checks at phase boundaries
+
+**Action:** Invoke `/setup-ralph` to scaffold the loop.
+
+### Workflow Recommendation Template
+
+When recommending a workflow, state:
+
+```
+## Recommended Workflow: [Single Session | Agent Teams | Ralph]
+
+**Reasoning:**
+- Estimated tasks: X
+- Time estimate: Y
+- Persistence needed: Yes/No
+- Parallelization opportunity: Low/Medium/High
+
+**Next step:** [Do the work | Define agent team structure | /setup-ralph]
+```
 
 ## Planning Process
 
