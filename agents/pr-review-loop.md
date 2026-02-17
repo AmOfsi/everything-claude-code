@@ -434,7 +434,12 @@ MAIL_EOF
 
 3. Parse response: `SKIP` or `MERGE` = proceed, `ACTIONABLE` or `HOLD` = wait, `ABORT` = cancel
 4. If approved: `gh pr merge <number> --squash --delete-branch`
-5. **Sync user's local main** (so they can build on merged work immediately):
+5. **Resolve the merge mail** (so it doesn't reappear as actionable on next startup):
+   ```bash
+   mv "$ORIGINAL_REPO/ralph-inbox/pr-review-<pr_number>-merge.md" \
+      "$ORIGINAL_REPO/ralph-inbox/.resolved-pr-review-<pr_number>-merge.md" 2>/dev/null || true
+   ```
+6. **Sync user's local main** (so they can build on merged work immediately):
    ```bash
    # Fast-forward user's local main/master WITHOUT checkout
    # This is safe even if the user is on a different branch
@@ -444,7 +449,7 @@ MAIL_EOF
      echo "Synced local $BASE_BRANCH to include merged PR" || \
      echo "Warning: Could not fast-forward local $BASE_BRANCH (user may be on it with changes)"
    ```
-6. Send COMPLETE mail with Pre-flight Summary:
+7. Send COMPLETE mail with Pre-flight Summary:
 ```bash
 cat > "$ORIGINAL_REPO/ralph-outbox/pr-review-<pr_number>-complete.md" << 'MAIL_EOF'
 # PR Review: Complete
@@ -477,7 +482,7 @@ Local `$BASE_BRANCH` synced to include this PR.
 **Skip reasons** (if any): <reasons>
 MAIL_EOF
 ```
-7. **CLEANUP WORKTREE**
+8. **CLEANUP WORKTREE**
 
 #### Pre-flight Tracking Variables
 
@@ -493,7 +498,18 @@ Include these in the mail templates so the user can audit which gates ran vs wer
 ## Error Handling
 
 On any error: send BLOCKED mail, keep worktree for debugging, exit.
-On user abort: cleanup worktree, exit.
+On user abort: resolve any actionable mail in inbox, cleanup worktree, exit.
+
+### Mail Cleanup (MANDATORY on all exit paths)
+
+Before exiting (success, abort, or error), resolve any actionable mail this agent created:
+```bash
+# Resolve all actionable mail for this PR
+for f in "$ORIGINAL_REPO"/ralph-inbox/pr-review-<pr_number>-*.md; do
+  [ -f "$f" ] && mv "$f" "$ORIGINAL_REPO/ralph-inbox/.resolved-$(basename "$f")" 2>/dev/null || true
+done
+```
+This prevents stale actionable mail from polluting the user's next session startup.
 
 ## Stop Conditions
 
