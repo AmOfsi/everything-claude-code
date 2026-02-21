@@ -145,13 +145,66 @@ This orchestrator delegates heavy work to specialized agents. You **MUST** use t
 
 | Task | Sub-Agent | Model |
 |------|-----------|-------|
-| Pre-push code review | `code-reviewer` | Opus |
-| Security analysis | `security-reviewer` | Opus |
-| Test coverage check | `tdd-guide` | Sonnet |
-| Documentation sync | `doc-updater` | Sonnet |
-| Fixing review comments | `build-error-resolver` | Sonnet |
+| Pre-push code review | `everything-claude-code:code-reviewer` | Opus |
+| Security analysis | `everything-claude-code:security-reviewer` | Opus |
+| Test coverage check | `everything-claude-code:tdd-guide` | Sonnet |
+| Documentation sync | `everything-claude-code:doc-updater` | Sonnet |
+| Fixing review comments | `everything-claude-code:build-error-resolver` | Sonnet |
 
-All critical decisions (triage, merge) route back to USER via mail.
+### Autonomous Decision-Making
+
+Sub-agents (code-reviewer, doc-updater, tdd-guide, etc.) may produce output that requires decisions. Since the user is NOT in this session, **YOU are the decision-maker** for sub-agent output. Follow these rules:
+
+**Decide autonomously (DO NOT mail the user) when:**
+- Code reviewer flags MEDIUM/LOW issues → fix them silently
+- Code reviewer flags CRITICAL/HIGH issues with a clear fix → fix them, commit
+- Doc-updater updates README/CLAUDE.md/codemaps → accept and commit
+- TDD-guide writes missing tests → accept and commit if tests pass
+- Security reviewer flags issues with clear remediation → fix them
+
+**Escalate via Ralph Mail ONLY when:**
+- Code reviewer flags a CRITICAL issue with no obvious fix (e.g., architectural problem)
+- Doc-updater proposes changes that alter project intent or public API docs
+- Security reviewer finds a vulnerability that requires user decision (e.g., "remove this feature or add auth?")
+- Any sub-agent's output contradicts existing CLAUDE.md instructions
+- Two sub-agents give conflicting guidance
+
+**When escalating**, include in the mail:
+1. Which sub-agent produced the finding
+2. The exact finding/recommendation
+3. Your two best options (with pros/cons)
+4. A default action you'll take if no response within 10 minutes
+
+```bash
+# Example escalation mail
+cat > "$ORIGINAL_REPO/ralph-outbox/pr-review-<pr_number>-decision.md" << 'MAIL_EOF'
+# PR Review: Decision Needed
+
+**From**: pr-review-loop-agent
+**To**: USER
+**Date**: YYYY-MM-DD HH:MM UTC
+**PR**: <repo>#<number>
+**Action-Required**: true
+**Response-File**: <repo>/ralph-inbox/pr-review-<pr_number>-response.md
+
+---
+
+## Sub-Agent Finding
+
+**Agent**: code-reviewer
+**Severity**: CRITICAL
+**Finding**: <description>
+
+## Options
+
+1. **Option A**: <description> — Pros: ... Cons: ...
+2. **Option B**: <description> — Pros: ... Cons: ...
+MAIL_EOF
+```
+
+After sending, send desktop notification (Step B from Mail Protocol) and poll for response. Do NOT auto-proceed — wait for user response (standard 1-hour timeout).
+
+All other decisions (triage, merge, abort) still route to USER via mail as before.
 
 ---
 
@@ -220,45 +273,50 @@ fi
 
 **Step 1: Code Review** (MANDATORY)
 
-You **MUST** use the Task tool to spawn a `code-reviewer` agent. Do NOT review code yourself.
+You **MUST** use the Task tool to spawn an `everything-claude-code:code-reviewer` agent. Do NOT review code yourself.
 ```
 Task({
-  subagent_type: "code-reviewer",
+  subagent_type: "everything-claude-code:code-reviewer",
   prompt: "Review all changes on branch <branch> compared to <base>.
            Working directory: $WORKTREE_DIR
            Focus on: bugs, security issues, code style, test coverage gaps.
-           Output: list of issues with severity (CRITICAL, HIGH, MEDIUM, LOW)"
+           Output: list of issues with severity (CRITICAL, HIGH, MEDIUM, LOW).
+           Do NOT ask for user input — output your full findings.
+           For each issue, include a concrete fix suggestion."
 })
 ```
 
 **Step 2: Fix Critical/High Issues**
 - If code-reviewer found CRITICAL or HIGH issues:
-  - Use `build-error-resolver` agent to fix them
+  - Use `everything-claude-code:build-error-resolver` agent to fix them
   - Commit fixes: `git commit -am "fix: address pre-flight review issues"`
 
 **Step 3: Test Coverage Check** (MANDATORY)
 
-You **MUST** use the Task tool to spawn a `tdd-guide` agent. Do NOT skip this step.
+You **MUST** use the Task tool to spawn an `everything-claude-code:tdd-guide` agent. Do NOT skip this step.
 ```
 Task({
-  subagent_type: "tdd-guide",
+  subagent_type: "everything-claude-code:tdd-guide",
   prompt: "Check test coverage for changes on branch <branch> compared to <base>.
            Working directory: $WORKTREE_DIR
            Verify: existing tests pass, coverage >= 80% for changed files.
-           If tests are missing, write them. If no test framework exists, note it but don't block."
+           If tests are missing, write them. If no test framework exists, note it but don't block.
+           Do NOT ask for user input — make best-judgment decisions on test structure."
 })
 ```
 
 **Step 4: Documentation Sync** (MANDATORY unless changes are docs-only)
 
-You **MUST** use the Task tool to spawn a `doc-updater` agent. Do NOT skip this step unless the PR is docs-only.
+You **MUST** use the Task tool to spawn an `everything-claude-code:doc-updater` agent. Do NOT skip this step unless the PR is docs-only.
 ```
 Task({
-  subagent_type: "doc-updater",
+  subagent_type: "everything-claude-code:doc-updater",
   prompt: "Check if documentation needs updating for changes on <branch>.
            Working directory: $WORKTREE_DIR
            Update: README, CLAUDE.md, codemaps if affected.
-           Skip if changes are trivial (typos, comments, minor refactors)."
+           Skip if changes are trivial (typos, comments, minor refactors).
+           Do NOT ask for user input — apply documentation updates directly.
+           If changes alter public API or project intent, flag but still apply your best judgment."
 })
 ```
 
@@ -266,10 +324,11 @@ Task({
 - If changes touch auth, API endpoints, user input handling, or secrets:
 ```
 Task({
-  subagent_type: "security-reviewer",
+  subagent_type: "everything-claude-code:security-reviewer",
   prompt: "Security review for changes on <branch>.
            Working directory: $WORKTREE_DIR
-           Check: OWASP Top 10, secrets exposure, injection vulnerabilities."
+           Check: OWASP Top 10, secrets exposure, injection vulnerabilities.
+           Do NOT ask for user input — output full findings with concrete remediation steps."
 })
 ```
 - Fix any CRITICAL security issues before proceeding
