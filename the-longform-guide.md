@@ -136,7 +136,7 @@ Default to Sonnet for 90% of coding tasks. Upgrade to Opus when first attempt fa
 Replace grep with mgrep - ~50% token reduction on average compared to traditional grep or ripgrep:
 
 ![mgrep Benchmark](./assets/images/longform/06-mgrep-benchmark.png)
-*In our 50-task benchmark, mgrep + Claude Code used ~2x fewer tokens than grep-based workflows at similar or better judged quality. Source: https://github.com/mixedbread-ai/mgrep*
+*In our 50-task benchmark, mgrep + Claude Code used ~2x fewer tokens than grep-based workflows at similar or better judged quality. Source: mgrep by @mixedbread-ai*
 
 **Modular Codebase Benefits:**
 
@@ -292,7 +292,7 @@ Phase 5: VERIFY (use build-error-resolver if needed) → done or loop back
 
 You can set it using `/statusline` - then Claude will say you don't have one but can set it up for you and ask what you want in it.
 
-See also: https://github.com/sirmalloc/ccstatusline
+See also: ccstatusline (community project for custom Claude Code status lines)
 
 ### Voice Transcription
 
@@ -323,16 +323,16 @@ alias q='cd ~/Desktop/projects'
 
 **Agent Orchestration:**
 
-- https://github.com/ruvnet/claude-flow - Enterprise orchestration platform with 54+ specialized agents
+- claude-flow — Community-built enterprise orchestration platform with 54+ specialized agents
 
 **Self-Improving Memory:**
 
-- https://github.com/affaan-m/everything-claude-code/tree/main/skills/continuous-learning
+- See `skills/continuous-learning/` in this repo
 - rlancemartin.github.io/2025/12/01/claude_diary/ - Session reflection pattern
 
 **System Prompts Reference:**
 
-- https://github.com/x1xhlol/system-prompts-and-models-of-ai-tools - Collection of system prompts (110k stars)
+- system-prompts-and-models-of-ai-tools — Community collection of AI system prompts (110k+ stars)
 
 **Official:**
 

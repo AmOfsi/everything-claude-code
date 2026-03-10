@@ -1,8 +1,63 @@
-# CLAUDE.md — everything-claude-code
+# CLAUDE.md
 
-## Purpose
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Community collection of Claude Code patterns: skills, agents, hooks, contexts, and best practices.
+## Project Overview
+
+This is a **Claude Code plugin** - a collection of production-ready agents, skills, hooks, commands, rules, and MCP configurations. The project provides battle-tested workflows for software development using Claude Code.
+
+## Running Tests
+
+```bash
+# Run all tests
+node tests/run-all.js
+
+# Run individual test files
+node tests/lib/utils.test.js
+node tests/lib/package-manager.test.js
+node tests/hooks/hooks.test.js
+```
+
+## Architecture
+
+The project is organized into several core components:
+
+- **agents/** - Specialized subagents for delegation (planner, code-reviewer, tdd-guide, etc.)
+- **skills/** - Workflow definitions and domain knowledge (coding standards, patterns, testing)
+- **commands/** - Slash commands invoked by users (/tdd, /plan, /e2e, etc.)
+- **hooks/** - Trigger-based automations (session persistence, pre/post-tool hooks)
+- **rules/** - Always-follow guidelines (security, coding style, testing requirements)
+- **mcp-configs/** - MCP server configurations for external integrations
+- **scripts/** - Cross-platform Node.js utilities for hooks and setup
+- **tests/** - Test suite for scripts and utilities
+
+## Key Commands
+
+- `/tdd` - Test-driven development workflow
+- `/plan` - Implementation planning
+- `/e2e` - Generate and run E2E tests
+- `/code-review` - Quality review
+- `/build-fix` - Fix build errors
+- `/learn` - Extract patterns from sessions
+- `/skill-create` - Generate skills from git history
+
+## Development Notes
+
+- Package manager detection: npm, pnpm, yarn, bun (configurable via `CLAUDE_PACKAGE_MANAGER` env var or project config)
+- Cross-platform: Windows, macOS, Linux support via Node.js scripts
+- Agent format: Markdown with YAML frontmatter (name, description, tools, model)
+- Skill format: Markdown with clear sections for when to use, how it works, examples
+- Hook format: JSON with matcher conditions and command/notification hooks
+
+## Contributing
+
+Follow the formats in CONTRIBUTING.md:
+- Agents: Markdown with frontmatter (name, description, tools, model)
+- Skills: Clear sections (When to Use, How It Works, Examples)
+- Commands: Markdown with description frontmatter
+- Hooks: JSON with matcher and hooks array
+
+File naming: lowercase with hyphens (e.g., `python-reviewer.md`, `tdd-workflow.md`)
 
 ## Ralph Mail System
 
@@ -51,55 +106,3 @@ Check `ralph-inbox/` for messages from other projects. Messages are delivered by
 - Knowledge queries (ask another project about its domain)
 - Status updates across async sessions
 - Broadcasting changes that affect multiple projects
-
-### Examples
-
-**Request deployment:**
-```markdown
-# Deploy Request - New Build Ready
-
-**From**: everything-claude-code
-**To**: amo-hub
-**Date**: 2026-02-13 09:00 UTC
-**Topic**: deploy-request
-
----
-
-New build available for everything-claude-code artifacts.
-Please deploy to production when ready.
-
-Build: #12345
-Artifacts: skills/, agents/, hooks/
-```
-
-**Query another project:**
-```markdown
-# Question: Tower Analysis Format
-
-**From**: everything-claude-code
-**To**: TowerFEM
-**Date**: 2026-02-13 09:00 UTC
-**Topic**: res-file-format
-
----
-
-What is the format of the .res output file?
-Need to document this for ResultAnalyzer integration.
-```
-
-## Directory Structure
-
-- `skills/` — Reusable skill patterns
-- `agents/` — Custom agent definitions
-- `hooks/` — Event hooks (PreToolUse, PostToolUse, etc.)
-- `contexts/` — Reusable context files
-- `rules/` — Global coding rules and patterns
-- `scripts/` — Utility scripts
-- `docs/` — Documentation
-
-## When Working Here
-
-- Test skills/agents/hooks locally before committing
-- Follow the contribution guidelines in CONTRIBUTING.md
-- Document new patterns with clear examples
-- Keep skills focused and composable
