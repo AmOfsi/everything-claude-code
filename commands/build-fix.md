@@ -1,3 +1,7 @@
+---
+description: Detect the project build system and incrementally fix build/type errors with minimal safe changes.
+---
+
 # Build and Fix
 
 Incrementally fix build and type errors with minimal, safe changes.
@@ -14,7 +18,7 @@ Identify the project's build tool and run the build:
 | `pom.xml` | `mvn compile` |
 | `build.gradle` | `./gradlew compileJava` |
 | `go.mod` | `go build ./...` |
-| `pyproject.toml` | `python -m py_compile` or `mypy .` |
+| `pyproject.toml` | `python -m compileall -q .` or `mypy .` |
 
 ## Step 2: Parse and Group Errors
 

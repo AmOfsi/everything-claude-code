@@ -61,7 +61,7 @@ claude plugin install typescript-lsp@claude-plugins-official
 **工作流：**
 
 * `commit-commands` - Git 工作流
-* `frontend-design` - UI 模式
+* `frontend-patterns` - UI 模式
 * `feature-dev` - 功能开发
 
 ***
@@ -82,8 +82,8 @@ claude plugin marketplace add https://github.com/mixedbread-ai/mgrep
 
 ```
 ~/.claude/plugins/
-|-- cache/                    # Downloaded plugins
-|-- installed_plugins.json    # Installed list
-|-- known_marketplaces.json   # Added marketplaces
-|-- marketplaces/             # Marketplace data
+|-- cache/                    # 已下载的插件
+|-- installed_plugins.json    # 已安装列表
+|-- known_marketplaces.json   # 已添加的市场
+|-- marketplaces/             # 市场数据
 ```

@@ -11,9 +11,13 @@ const assert = require('assert');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 
 const validatorsDir = path.join(__dirname, '..', '..', 'scripts', 'ci');
+const repoRoot = path.join(__dirname, '..', '..');
+const modulesSchemaPath = path.join(repoRoot, 'schemas', 'install-modules.schema.json');
+const profilesSchemaPath = path.join(repoRoot, 'schemas', 'install-profiles.schema.json');
+const componentsSchemaPath = path.join(repoRoot, 'schemas', 'install-components.schema.json');
 
 // Test helpers
 function test(name, fn) {
@@ -36,6 +40,56 @@ function cleanupTestDir(testDir) {
   fs.rmSync(testDir, { recursive: true, force: true });
 }
 
+function writeJson(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
+}
+
+function writeInstallComponentsManifest(testDir, components) {
+  writeJson(path.join(testDir, 'manifests', 'install-components.json'), {
+    version: 1,
+    components,
+  });
+}
+
+function stripShebang(source) {
+  let s = source;
+  if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+  if (s.startsWith('#!')) {
+    const nl = s.indexOf('\n');
+    s = nl === -1 ? '' : s.slice(nl + 1);
+  }
+  return s;
+}
+
+/**
+ * Run modified source via a temp file (avoids Windows node -e shebang issues).
+ * The temp file is written inside the repo so require() can resolve node_modules.
+ * @param {string} source - JavaScript source to execute
+ * @returns {{code: number, stdout: string, stderr: string}}
+ */
+function runSourceViaTempFile(source) {
+  const tmpFile = path.join(repoRoot, `.tmp-validator-${Date.now()}-${Math.random().toString(36).slice(2)}.js`);
+  try {
+    fs.writeFileSync(tmpFile, source, 'utf8');
+    const stdout = execFileSync('node', [tmpFile], {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 10000,
+      cwd: repoRoot,
+    });
+    return { code: 0, stdout, stderr: '' };
+  } catch (err) {
+    return {
+      code: err.status || 1,
+      stdout: err.stdout || '',
+      stderr: err.stderr || '',
+    };
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch (_) { /* ignore cleanup errors */ }
+  }
+}
+
 /**
  * Run a validator script via a wrapper that overrides its directory constant.
  * This allows testing error cases without modifying real project files.
@@ -51,27 +105,14 @@ function runValidatorWithDir(validatorName, dirConstant, overridePath) {
   // Read the validator source, replace the directory constant, and run as a wrapper
   let source = fs.readFileSync(validatorPath, 'utf8');
 
-  // Remove the shebang line
-  source = source.replace(/^#!.*\n/, '');
+  // Remove the shebang line so wrappers also work against CRLF-checked-out files on Windows.
+  source = stripShebang(source);
 
   // Replace the directory constant with our override path
   const dirRegex = new RegExp(`const ${dirConstant} = .*?;`);
   source = source.replace(dirRegex, `const ${dirConstant} = ${JSON.stringify(overridePath)};`);
 
-  try {
-    const stdout = execFileSync('node', ['-e', source], {
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 10000,
-    });
-    return { code: 0, stdout, stderr: '' };
-  } catch (err) {
-    return {
-      code: err.status || 1,
-      stdout: err.stdout || '',
-      stderr: err.stderr || '',
-    };
-  }
+  return runSourceViaTempFile(source);
 }
 
 /**
@@ -82,25 +123,12 @@ function runValidatorWithDir(validatorName, dirConstant, overridePath) {
 function runValidatorWithDirs(validatorName, overrides) {
   const validatorPath = path.join(validatorsDir, `${validatorName}.js`);
   let source = fs.readFileSync(validatorPath, 'utf8');
-  source = source.replace(/^#!.*\n/, '');
+  source = stripShebang(source);
   for (const [constant, overridePath] of Object.entries(overrides)) {
     const dirRegex = new RegExp(`const ${constant} = .*?;`);
     source = source.replace(dirRegex, `const ${constant} = ${JSON.stringify(overridePath)};`);
   }
-  try {
-    const stdout = execFileSync('node', ['-e', source], {
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 10000,
-    });
-    return { code: 0, stdout, stderr: '' };
-  } catch (err) {
-    return {
-      code: err.status || 1,
-      stdout: err.stdout || '',
-      stderr: err.stderr || '',
-    };
-  }
+  return runSourceViaTempFile(source);
 }
 
 /**
@@ -124,6 +152,143 @@ function runValidator(validatorName) {
   }
 }
 
+function runCatalogValidator(overrides = {}) {
+  const validatorPath = path.join(validatorsDir, 'catalog.js');
+  let source = fs.readFileSync(validatorPath, 'utf8');
+  source = stripShebang(source);
+  const argv = Array.isArray(overrides.argv) && overrides.argv.length > 0
+    ? overrides.argv
+    : ['--text'];
+  const argvPreamble = argv.map(arg => `process.argv.push(${JSON.stringify(arg)});`).join('\n');
+  source = `${argvPreamble}\n${source}`;
+
+  const resolvedOverrides = {
+    ROOT: repoRoot,
+    README_PATH: path.join(repoRoot, 'README.md'),
+    AGENTS_PATH: path.join(repoRoot, 'AGENTS.md'),
+    README_ZH_CN_PATH: path.join(repoRoot, 'README.zh-CN.md'),
+    DOCS_ZH_CN_README_PATH: path.join(repoRoot, 'docs', 'zh-CN', 'README.md'),
+    DOCS_ZH_CN_AGENTS_PATH: path.join(repoRoot, 'docs', 'zh-CN', 'AGENTS.md'),
+    PLUGIN_JSON_PATH: path.join(repoRoot, '.claude-plugin', 'plugin.json'),
+    MARKETPLACE_JSON_PATH: path.join(repoRoot, '.claude-plugin', 'marketplace.json'),
+    ...overrides,
+  };
+
+  for (const [constant, overridePath] of Object.entries(resolvedOverrides)) {
+    const dirRegex = new RegExp(`const ${constant} = .*?;`);
+    source = source.replace(dirRegex, `const ${constant} = ${JSON.stringify(overridePath)};`);
+  }
+
+  return runSourceViaTempFile(source);
+}
+
+// Run validate-skills.js against a fixture dir, optionally passing
+// extra argv (e.g. '--strict') and env overrides (e.g.
+// CI_STRICT_SKILLS=1) so the frontmatter finding suite can exercise
+// both warn and strict modes via argv and env code paths.
+//
+// Captures stderr on both success and failure (the shared
+// runSourceViaTempFile helper only surfaces stderr when the child
+// exits non-zero, which hides WARN lines in the default mode).
+function runSkillsValidator(testDir, argv = [], envOverrides = {}) {
+  const validatorPath = path.join(validatorsDir, 'validate-skills.js');
+  let source = fs.readFileSync(validatorPath, 'utf8');
+  source = stripShebang(source);
+  source = source.replace(
+    /const SKILLS_DIR = .*?;/,
+    `const SKILLS_DIR = ${JSON.stringify(testDir)};`,
+  );
+  if (argv.length > 0) {
+    const argvPreamble = argv
+      .map(arg => `process.argv.push(${JSON.stringify(arg)});`)
+      .join('\n');
+    source = `${argvPreamble}\n${source}`;
+  }
+  const tmpFile = path.join(repoRoot,
+    `.tmp-validator-${Date.now()}-${Math.random().toString(36).slice(2)}.js`);
+  try {
+    fs.writeFileSync(tmpFile, source, 'utf8');
+    const r = spawnSync('node', [tmpFile], {
+      encoding: 'utf8',
+      timeout: 10000,
+      cwd: repoRoot,
+      env: { ...process.env, CI_STRICT_SKILLS: '', ...envOverrides },
+    });
+    return {
+      code: typeof r.status === 'number' ? r.status : 1,
+      stdout: r.stdout || '',
+      stderr: r.stderr || '',
+    };
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch (_) { /* ignore */ }
+  }
+}
+
+function writeCatalogFixture(testDir, options = {}) {
+  const {
+    readmeCounts = { agents: 1, skills: 1, commands: 1 },
+    readmeProjectTreeAgents = readmeCounts.agents,
+    readmeTableCounts = readmeCounts,
+    readmeParityCounts = readmeCounts,
+    readmeUnrelatedSkillsCount = 16,
+    summaryCounts = { agents: 1, skills: 1, commands: 1 },
+    structureLines = [
+      'agents/          — 1 specialized subagents',
+      'skills/          — 1 workflow skills and domain knowledge',
+      'commands/        — 1 slash commands',
+    ],
+    zhRootReadmeCounts = { agents: 1, skills: 1, commands: 1 },
+    zhDocsReadmeCounts = { agents: 1, skills: 1, commands: 1 },
+    zhDocsTableCounts = zhDocsReadmeCounts,
+    zhDocsParityCounts = zhDocsReadmeCounts,
+    zhDocsUnrelatedSkillsCount = 16,
+    zhAgentsSummaryCounts = { agents: 1, skills: 1, commands: 1 },
+    zhAgentsStructureLines = [
+      'agents/          — 1 个专业子代理',
+      'skills/          — 1 个工作流技能和领域知识',
+      'commands/        — 1 个斜杠命令',
+    ],
+    pluginCounts = { agents: 1, skills: 1, commands: 1 },
+    marketplaceCounts = { agents: 1, skills: 1, commands: 1 },
+  } = options;
+
+  const readmePath = path.join(testDir, 'README.md');
+  const agentsPath = path.join(testDir, 'AGENTS.md');
+  const zhRootReadmePath = path.join(testDir, 'README.zh-CN.md');
+  const zhDocsReadmePath = path.join(testDir, 'docs', 'zh-CN', 'README.md');
+  const zhAgentsPath = path.join(testDir, 'docs', 'zh-CN', 'AGENTS.md');
+  const pluginJsonPath = path.join(testDir, '.claude-plugin', 'plugin.json');
+  const marketplaceJsonPath = path.join(testDir, '.claude-plugin', 'marketplace.json');
+
+  fs.mkdirSync(path.join(testDir, 'agents'), { recursive: true });
+  fs.mkdirSync(path.join(testDir, 'commands'), { recursive: true });
+  fs.mkdirSync(path.join(testDir, 'skills', 'demo-skill'), { recursive: true });
+  fs.mkdirSync(path.join(testDir, 'docs', 'zh-CN'), { recursive: true });
+  fs.mkdirSync(path.join(testDir, '.claude-plugin'), { recursive: true });
+
+  fs.writeFileSync(path.join(testDir, 'agents', 'planner.md'), '---\nmodel: sonnet\ntools: Read\n---\n# Planner');
+  fs.writeFileSync(path.join(testDir, 'commands', 'plan.md'), '---\ndescription: Plan\n---\n# Plan');
+  fs.writeFileSync(path.join(testDir, 'skills', 'demo-skill', 'SKILL.md'), '---\nname: demo-skill\ndescription: Demo skill\norigin: ECC\n---\n# Demo Skill');
+
+  fs.writeFileSync(readmePath, `Access to ${readmeCounts.agents} agents, ${readmeCounts.skills} skills, and ${readmeCounts.commands} commands.\n- **Public surface synced to the live repo** - metadata, catalog counts, plugin manifests, and install-facing docs now match the actual OSS surface: ${readmeCounts.agents} agents, ${readmeCounts.skills} skills, and ${readmeCounts.commands} legacy command shims.\n|-- agents/           # ${readmeProjectTreeAgents} specialized subagents for delegation\n| Feature | Claude Code | Cursor IDE | Codex CLI | OpenCode |\n|---------|------------|------------|-----------|----------|\n| Agents | PASS: ${readmeTableCounts.agents} agents | Shared | Shared | 1 |\n| Commands | PASS: ${readmeTableCounts.commands} commands | Shared | Shared | 1 |\n| Skills | PASS: ${readmeTableCounts.skills} skills | Shared | Shared | 1 |\n\n| Feature | Count | Format |\n|-----------|-------|---------|\n| Skills | ${readmeUnrelatedSkillsCount} | .agents/skills/ |\n\n## Cross-Tool Feature Parity\n\n| Feature | Claude Code | Cursor IDE | Codex CLI | OpenCode |\n|---------|------------|------------|-----------|----------|\n| **Agents** | ${readmeParityCounts.agents} | Shared (AGENTS.md) | Shared (AGENTS.md) | 12 |\n| **Commands** | ${readmeParityCounts.commands} | Shared | Instruction-based | 31 |\n| **Skills** | ${readmeParityCounts.skills} | Shared | 10 (native format) | 37 |\n`);
+  fs.writeFileSync(agentsPath, `This is a **production-ready AI coding plugin** providing ${summaryCounts.agents} specialized agents, ${summaryCounts.skills} skills, ${summaryCounts.commands} commands, and automated hook workflows for software development.\n\n\`\`\`\n${structureLines.join('\n')}\n\`\`\`\n`);
+  fs.writeFileSync(zhRootReadmePath, `**完成！** 你现在可以使用 ${zhRootReadmeCounts.agents} 个代理、${zhRootReadmeCounts.skills} 个技能和 ${zhRootReadmeCounts.commands} 个命令。\n`);
+  fs.writeFileSync(zhDocsReadmePath, `**搞定！** 你现在可以使用 ${zhDocsReadmeCounts.agents} 个智能体、${zhDocsReadmeCounts.skills} 项技能和 ${zhDocsReadmeCounts.commands} 个命令了。\n| 功能特性 | Claude Code | OpenCode | 状态 |\n|---------|-------------|----------|--------|\n| 智能体 | \u2705 ${zhDocsTableCounts.agents} 个 | \u2705 12 个 | **Claude Code 领先** |\n| 命令 | \u2705 ${zhDocsTableCounts.commands} 个 | \u2705 31 个 | **Claude Code 领先** |\n| 技能 | \u2705 ${zhDocsTableCounts.skills} 项 | \u2705 37 项 | **Claude Code 领先** |\n\n| 功能特性 | 数量 | 格式 |\n|-----------|-------|---------|\n| 技能 | ${zhDocsUnrelatedSkillsCount} | .agents/skills/ |\n\n## 跨工具功能对等\n\n| 功能特性 | Claude Code | Cursor IDE | Codex CLI | OpenCode |\n|---------|------------|------------|-----------|----------|\n| **智能体** | ${zhDocsParityCounts.agents} | 共享 (AGENTS.md) | 共享 (AGENTS.md) | 12 |\n| **命令** | ${zhDocsParityCounts.commands} | 共享 | 基于指令 | 31 |\n| **技能** | ${zhDocsParityCounts.skills} | 共享 | 10 (原生格式) | 37 |\n`);
+  fs.writeFileSync(zhAgentsPath, `这是一个**生产就绪的 AI 编码插件**，提供 ${zhAgentsSummaryCounts.agents} 个专业代理、${zhAgentsSummaryCounts.skills} 项技能、${zhAgentsSummaryCounts.commands} 条命令以及自动化钩子工作流，用于软件开发。\n\n\`\`\`\n${zhAgentsStructureLines.join('\n')}\n\`\`\`\n`);
+  fs.writeFileSync(pluginJsonPath, JSON.stringify({
+    name: 'ecc',
+    description: `Battle-tested plugin — ${pluginCounts.agents} agents, ${pluginCounts.skills} skills, ${pluginCounts.commands} legacy command shims`,
+  }, null, 2));
+  fs.writeFileSync(marketplaceJsonPath, JSON.stringify({
+    plugins: [{
+      name: 'ecc',
+      description: `Marketplace plugin — ${marketplaceCounts.agents} agents, ${marketplaceCounts.skills} skills, ${marketplaceCounts.commands} legacy command shims`,
+    }],
+  }, null, 2));
+
+  return { readmePath, agentsPath, zhRootReadmePath, zhDocsReadmePath, zhAgentsPath, pluginJsonPath, marketplaceJsonPath };
+}
+
 function runTests() {
   console.log('\n=== Testing CI Validators ===\n');
 
@@ -134,6 +299,11 @@ function runTests() {
   // validate-agents.js
   // ==========================================
   console.log('validate-agents.js:');
+
+  if (test('strips CRLF shebangs before writing temp wrappers', () => {
+    const source = '#!/usr/bin/env node\r\nconsole.log("ok");';
+    assert.strictEqual(stripShebang(source), 'console.log("ok");');
+  })) passed++; else failed++;
 
   if (test('passes on real project agents', () => {
     const result = runValidator('validate-agents');
@@ -244,6 +414,243 @@ function runTests() {
     const result = runValidator('validate-hooks');
     assert.strictEqual(result.code, 0, `Should pass, got stderr: ${result.stderr}`);
     assert.ok(result.stdout.includes('Validated'), 'Should output validation count');
+  })) passed++; else failed++;
+
+  // ==========================================
+  // catalog.js
+  // ==========================================
+  console.log('\ncatalog.js:');
+
+  if (test('passes on real project catalog counts', () => {
+    const result = runCatalogValidator();
+    assert.strictEqual(result.code, 0, `Should pass, got stderr: ${result.stderr}`);
+    assert.ok(result.stdout.includes('Documentation counts match the repository catalog.'), 'Should report matching counts');
+  })) passed++; else failed++;
+
+  if (test('fails when README and AGENTS catalog counts drift', () => {
+    const testDir = createTestDir();
+    const {
+      readmePath,
+      agentsPath,
+      zhRootReadmePath,
+      zhDocsReadmePath,
+      zhAgentsPath,
+      pluginJsonPath,
+      marketplaceJsonPath,
+    } = writeCatalogFixture(testDir, {
+      readmeCounts: { agents: 99, skills: 99, commands: 99 },
+      readmeTableCounts: { agents: 99, skills: 99, commands: 99 },
+      readmeParityCounts: { agents: 99, skills: 99, commands: 99 },
+      summaryCounts: { agents: 99, skills: 99, commands: 99 },
+      structureLines: [
+        'agents/          — 99 specialized subagents',
+        'skills/          — 99 workflow skills and domain knowledge',
+        'commands/        — 99 slash commands',
+      ],
+      zhRootReadmeCounts: { agents: 99, skills: 99, commands: 99 },
+      zhDocsReadmeCounts: { agents: 99, skills: 99, commands: 99 },
+      zhDocsTableCounts: { agents: 99, skills: 99, commands: 99 },
+      zhDocsParityCounts: { agents: 99, skills: 99, commands: 99 },
+      zhAgentsSummaryCounts: { agents: 99, skills: 99, commands: 99 },
+      zhAgentsStructureLines: [
+        'agents/          — 99 个专业子代理',
+        'skills/          — 99 个工作流技能和领域知识',
+        'commands/        — 99 个斜杠命令',
+      ],
+    });
+
+    const result = runCatalogValidator({
+      ROOT: testDir,
+      README_PATH: readmePath,
+      AGENTS_PATH: agentsPath,
+      README_ZH_CN_PATH: zhRootReadmePath,
+      DOCS_ZH_CN_README_PATH: zhDocsReadmePath,
+      DOCS_ZH_CN_AGENTS_PATH: zhAgentsPath,
+      PLUGIN_JSON_PATH: pluginJsonPath,
+      MARKETPLACE_JSON_PATH: marketplaceJsonPath,
+    });
+
+    assert.strictEqual(result.code, 1, 'Should fail when catalog counts drift');
+    assert.ok((result.stdout + result.stderr).includes('Documentation count mismatches found:'), 'Should report mismatches');
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('fails when README parity table counts drift', () => {
+    const testDir = createTestDir();
+    const {
+      readmePath,
+      agentsPath,
+      zhRootReadmePath,
+      zhDocsReadmePath,
+      zhAgentsPath,
+      pluginJsonPath,
+      marketplaceJsonPath,
+    } = writeCatalogFixture(testDir, {
+      readmeCounts: { agents: 1, skills: 1, commands: 1 },
+      readmeTableCounts: { agents: 1, skills: 1, commands: 1 },
+      readmeParityCounts: { agents: 9, skills: 8, commands: 7 },
+      summaryCounts: { agents: 1, skills: 1, commands: 1 },
+    });
+
+    const result = runCatalogValidator({
+      ROOT: testDir,
+      README_PATH: readmePath,
+      AGENTS_PATH: agentsPath,
+      README_ZH_CN_PATH: zhRootReadmePath,
+      DOCS_ZH_CN_README_PATH: zhDocsReadmePath,
+      DOCS_ZH_CN_AGENTS_PATH: zhAgentsPath,
+      PLUGIN_JSON_PATH: pluginJsonPath,
+      MARKETPLACE_JSON_PATH: marketplaceJsonPath,
+    });
+
+    assert.strictEqual(result.code, 1, 'Should fail when README parity table drifts');
+    assert.ok(
+      (result.stdout + result.stderr).includes('README.md parity table'),
+      'Should mention the README parity table mismatch'
+    );
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('fails when a tracked catalog document is missing', () => {
+    const testDir = createTestDir();
+    const {
+      readmePath,
+      agentsPath,
+      zhRootReadmePath,
+      zhDocsReadmePath,
+      pluginJsonPath,
+      marketplaceJsonPath,
+    } = writeCatalogFixture(testDir);
+    const missingZhAgentsPath = path.join(testDir, 'docs', 'zh-CN', 'AGENTS.md');
+    fs.rmSync(missingZhAgentsPath);
+
+    const result = runCatalogValidator({
+      ROOT: testDir,
+      README_PATH: readmePath,
+      AGENTS_PATH: agentsPath,
+      README_ZH_CN_PATH: zhRootReadmePath,
+      DOCS_ZH_CN_README_PATH: zhDocsReadmePath,
+      DOCS_ZH_CN_AGENTS_PATH: missingZhAgentsPath,
+      PLUGIN_JSON_PATH: pluginJsonPath,
+      MARKETPLACE_JSON_PATH: marketplaceJsonPath,
+    });
+
+    assert.strictEqual(result.code, 1, 'Should fail when a tracked doc is missing');
+    assert.ok(
+      (result.stdout + result.stderr).includes('Failed to read AGENTS.md'),
+      'Should mention the missing tracked document'
+    );
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('syncs tracked catalog docs in write mode without rewriting unrelated tables', () => {
+    const testDir = createTestDir();
+    const {
+      readmePath,
+      agentsPath,
+      zhRootReadmePath,
+      zhDocsReadmePath,
+      zhAgentsPath,
+      pluginJsonPath,
+      marketplaceJsonPath,
+    } = writeCatalogFixture(testDir, {
+      readmeCounts: { agents: 9, skills: 9, commands: 9 },
+      readmeTableCounts: { agents: 8, skills: 8, commands: 8 },
+      readmeParityCounts: { agents: 7, skills: 7, commands: 7 },
+      summaryCounts: { agents: 6, skills: 6, commands: 6 },
+      zhRootReadmeCounts: { agents: 10, skills: 10, commands: 10 },
+      zhDocsReadmeCounts: { agents: 11, skills: 11, commands: 11 },
+      zhDocsTableCounts: { agents: 12, skills: 12, commands: 12 },
+      zhDocsParityCounts: { agents: 13, skills: 13, commands: 13 },
+      zhAgentsSummaryCounts: { agents: 14, skills: 14, commands: 14 },
+      pluginCounts: { agents: 18, skills: 18, commands: 18 },
+      marketplaceCounts: { agents: 19, skills: 19, commands: 19 },
+      zhAgentsStructureLines: [
+        'agents/          — 15 个专业子代理',
+        'skills/          — 16 个工作流技能和领域知识',
+        'commands/        — 17 个斜杠命令',
+      ],
+    });
+
+    const result = runCatalogValidator({
+      argv: ['--write', '--text'],
+      ROOT: testDir,
+      README_PATH: readmePath,
+      AGENTS_PATH: agentsPath,
+      README_ZH_CN_PATH: zhRootReadmePath,
+      DOCS_ZH_CN_README_PATH: zhDocsReadmePath,
+      DOCS_ZH_CN_AGENTS_PATH: zhAgentsPath,
+      PLUGIN_JSON_PATH: pluginJsonPath,
+      MARKETPLACE_JSON_PATH: marketplaceJsonPath,
+    });
+
+    assert.strictEqual(result.code, 0, `Should sync and pass, got stderr: ${result.stderr}`);
+
+    const readme = fs.readFileSync(readmePath, 'utf8');
+    const agentsDoc = fs.readFileSync(agentsPath, 'utf8');
+    const zhRootReadme = fs.readFileSync(zhRootReadmePath, 'utf8');
+    const zhDocsReadme = fs.readFileSync(zhDocsReadmePath, 'utf8');
+    const zhAgentsDoc = fs.readFileSync(zhAgentsPath, 'utf8');
+    const pluginJson = fs.readFileSync(pluginJsonPath, 'utf8');
+    const marketplaceJson = fs.readFileSync(marketplaceJsonPath, 'utf8');
+
+    assert.ok(readme.includes('Access to 1 agents, 1 skills, and 1 legacy command shims'), 'Should sync README quick-start summary');
+    assert.ok(readme.includes('actual OSS surface: 1 agents, 1 skills, and 1 legacy command shims'), 'Should sync README release-note summary');
+    assert.ok(readme.includes('|-- agents/           # 1 specialized subagents for delegation'), 'Should sync README project tree agents count');
+    assert.ok(readme.includes('| Agents | PASS: 1 agents |'), 'Should sync README comparison table');
+    assert.ok(readme.includes('| Skills | 16 | .agents/skills/ |'), 'Should not rewrite unrelated README tables');
+    assert.ok(readme.includes('| **Agents** | 1 | Shared (AGENTS.md) | Shared (AGENTS.md) | 12 |'), 'Should sync README parity table');
+    assert.ok(agentsDoc.includes('providing 1 specialized agents, 1 skills, 1 commands'), 'Should sync AGENTS summary');
+    assert.ok(agentsDoc.includes('skills/          — 1 workflow skills and domain knowledge'), 'Should sync AGENTS structure');
+    assert.ok(zhRootReadme.includes('你现在可以使用 1 个代理、1 个技能和 1 个命令'), 'Should sync README.zh-CN quick-start summary');
+    assert.ok(zhDocsReadme.includes('你现在可以使用 1 个智能体、1 项技能和 1 个命令了'), 'Should sync docs/zh-CN/README quick-start summary');
+    assert.ok(zhDocsReadme.includes('| 智能体 | \u2705 1 个 |'), 'Should sync docs/zh-CN/README comparison table');
+    assert.ok(zhDocsReadme.includes('| 技能 | 16 | .agents/skills/ |'), 'Should not rewrite unrelated docs/zh-CN/README tables');
+    assert.ok(zhDocsReadme.includes('| **智能体** | 1 | 共享 (AGENTS.md) | 共享 (AGENTS.md) | 12 |'), 'Should sync docs/zh-CN/README parity table');
+    assert.ok(zhAgentsDoc.includes('提供 1 个专业代理、1 项技能、1 条命令'), 'Should sync docs/zh-CN/AGENTS summary');
+    assert.ok(zhAgentsDoc.includes('commands/        — 1 个斜杠命令'), 'Should sync docs/zh-CN/AGENTS structure');
+    assert.ok(pluginJson.includes('1 agents, 1 skills, 1 legacy command shims'), 'Should sync plugin manifest catalog description');
+    assert.ok(marketplaceJson.includes('1 agents, 1 skills, 1 legacy command shims'), 'Should sync marketplace plugin catalog description');
+
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('accepts AGENTS project structure entries with varied spacing and dash styles', () => {
+    const testDir = createTestDir();
+    const {
+      readmePath,
+      agentsPath,
+      zhRootReadmePath,
+      zhDocsReadmePath,
+      zhAgentsPath,
+      pluginJsonPath,
+      marketplaceJsonPath,
+    } = writeCatalogFixture(testDir, {
+      structureLines: [
+        '  agents/   -   1 specialized subagents   ',
+        '\tskills/\t–\t1+ workflow skills and domain knowledge\t',
+        ' commands/ — 1 slash commands ',
+      ],
+      zhAgentsStructureLines: [
+        '  agents/   -   1 个专业子代理   ',
+        '\tskills/\t–\t1+ 个工作流技能和领域知识\t',
+        ' commands/ — 1 个斜杠命令 ',
+      ],
+    });
+
+    const result = runCatalogValidator({
+      ROOT: testDir,
+      README_PATH: readmePath,
+      AGENTS_PATH: agentsPath,
+      README_ZH_CN_PATH: zhRootReadmePath,
+      DOCS_ZH_CN_README_PATH: zhDocsReadmePath,
+      DOCS_ZH_CN_AGENTS_PATH: zhAgentsPath,
+      PLUGIN_JSON_PATH: pluginJsonPath,
+      MARKETPLACE_JSON_PATH: marketplaceJsonPath,
+    });
+
+    assert.strictEqual(result.code, 0, `Should accept formatting variations, got stderr: ${result.stderr}`);
+    cleanupTestDir(testDir);
   })) passed++; else failed++;
 
   if (test('exits 0 when hooks.json does not exist', () => {
@@ -479,6 +886,181 @@ function runTests() {
     const result = runValidatorWithDir('validate-skills', 'SKILLS_DIR', testDir);
     assert.strictEqual(result.code, 1, 'Should reject whitespace-only SKILL.md');
     assert.ok(result.stderr.includes('Empty file'), 'Should report empty file');
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('warns when frontmatter is missing name (default mode)', () => {
+    const testDir = createTestDir();
+    const skillDir = path.join(testDir, 'no-name-skill');
+    fs.mkdirSync(skillDir);
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'),
+      '---\ndescription: "X"\norigin: ECC\n---\n# Skill');
+
+    const result = runSkillsValidator(testDir);
+    assert.strictEqual(result.code, 0,
+      `Default mode must not fail CI; got stderr: ${result.stderr}`);
+    assert.ok(
+      result.stderr.includes('WARN') && result.stderr.includes('missing required field: name'),
+      `Should warn on missing name; got stderr: ${result.stderr}`);
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('errors when frontmatter is missing name (strict mode)', () => {
+    const testDir = createTestDir();
+    const skillDir = path.join(testDir, 'no-name-skill');
+    fs.mkdirSync(skillDir);
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'),
+      '---\ndescription: "X"\norigin: ECC\n---\n# Skill');
+
+    const result = runSkillsValidator(testDir, ['--strict']);
+    assert.strictEqual(result.code, 1, '--strict must fail CI on missing name');
+    assert.ok(result.stderr.includes('missing required field: name'),
+      'Should report missing name');
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('warns on literal block-scalar description (|-)', () => {
+    const testDir = createTestDir();
+    const skillDir = path.join(testDir, 'block-desc-skill');
+    fs.mkdirSync(skillDir);
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'),
+      '---\nname: block-desc-skill\ndescription: |-\n  line one\n  line two\norigin: ECC\n---\n# Skill');
+
+    const result = runSkillsValidator(testDir);
+    assert.strictEqual(result.code, 0, 'Default mode should not fail CI');
+    assert.ok(
+      result.stderr.includes('WARN') && result.stderr.includes('literal block scalar'),
+      `Should warn on |- description; got stderr: ${result.stderr}`);
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('accepts folded (>) and inline descriptions', () => {
+    const testDir = createTestDir();
+    const folded = path.join(testDir, 'folded-skill');
+    fs.mkdirSync(folded);
+    fs.writeFileSync(path.join(folded, 'SKILL.md'),
+      '---\nname: folded-skill\ndescription: >\n  joined\n  on spaces\norigin: ECC\n---\n# Skill');
+    const inline = path.join(testDir, 'inline-skill');
+    fs.mkdirSync(inline);
+    fs.writeFileSync(path.join(inline, 'SKILL.md'),
+      '---\nname: inline-skill\ndescription: "single line"\norigin: ECC\n---\n# Skill');
+
+    const result = runSkillsValidator(testDir, ['--strict']);
+    assert.strictEqual(result.code, 0,
+      `Folded and inline should pass strict; got stderr: ${result.stderr}`);
+    assert.ok(result.stdout.includes('Validated 2'),
+      `Should count both skills; got stdout: ${result.stdout}`);
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('skips hidden directories under skills/', () => {
+    const testDir = createTestDir();
+    // A dot-prefixed directory (e.g. .DS_Store-adjacent junk or legacy
+    // cache) must not count as a skill and must not error.
+    fs.mkdirSync(path.join(testDir, '.cache'));
+    fs.writeFileSync(path.join(testDir, '.cache', 'SKILL.md'), '# ignored');
+    const real = path.join(testDir, 'real-skill');
+    fs.mkdirSync(real);
+    fs.writeFileSync(path.join(real, 'SKILL.md'),
+      '---\nname: real-skill\ndescription: "x"\norigin: ECC\n---\n# Skill');
+
+    const result = runSkillsValidator(testDir, ['--strict']);
+    assert.strictEqual(result.code, 0, 'Hidden dirs should be skipped');
+    assert.ok(result.stdout.includes('Validated 1'),
+      `Should only count the non-hidden skill; got stdout: ${result.stdout}`);
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('warns when name: value is empty or whitespace', () => {
+    const testDir = createTestDir();
+    const skillDir = path.join(testDir, 'empty-name-skill');
+    fs.mkdirSync(skillDir);
+    // `name:` key present but value is blank.
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'),
+      '---\nname:    \ndescription: "X"\norigin: ECC\n---\n# Skill');
+
+    const result = runSkillsValidator(testDir);
+    assert.strictEqual(result.code, 0,
+      `Default mode must not fail CI; got stderr: ${result.stderr}`);
+    assert.ok(
+      result.stderr.includes('WARN') && result.stderr.includes("'name' is empty"),
+      `Should warn on empty name; got stderr: ${result.stderr}`);
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('warns on literal block-scalar description with |+ chomp', () => {
+    const testDir = createTestDir();
+    const skillDir = path.join(testDir, 'keep-desc-skill');
+    fs.mkdirSync(skillDir);
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'),
+      '---\nname: keep-desc-skill\ndescription: |+\n  line one\n  line two\norigin: ECC\n---\n# Skill');
+
+    const result = runSkillsValidator(testDir);
+    assert.strictEqual(result.code, 0, 'Default mode should not fail CI');
+    assert.ok(result.stderr.includes('literal block scalar'),
+      `Should warn on |+ description; got stderr: ${result.stderr}`);
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('warns on block-scalar description with indent indicator and trailing comment', () => {
+    const testDir = createTestDir();
+    const skillDir = path.join(testDir, 'indent-desc-skill');
+    fs.mkdirSync(skillDir);
+    // `|-2  # note` is still a literal block scalar in YAML 1.2.
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'),
+      '---\nname: indent-desc-skill\ndescription: |-2  # trimmed two-space indent\n    line one\n    line two\norigin: ECC\n---\n# Skill');
+
+    const result = runSkillsValidator(testDir);
+    assert.strictEqual(result.code, 0, 'Default mode should not fail CI');
+    assert.ok(result.stderr.includes('literal block scalar'),
+      `Should warn on |-2 description; got stderr: ${result.stderr}`);
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('honors CI_STRICT_SKILLS=1 env flag', () => {
+    const testDir = createTestDir();
+    const skillDir = path.join(testDir, 'no-name-skill-env');
+    fs.mkdirSync(skillDir);
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'),
+      '---\ndescription: "X"\norigin: ECC\n---\n# Skill');
+
+    const result = runSkillsValidator(testDir, [], { CI_STRICT_SKILLS: '1' });
+    assert.strictEqual(result.code, 1, 'CI_STRICT_SKILLS=1 must fail CI on missing name');
+    assert.ok(result.stderr.includes('missing required field: name'),
+      'Should report missing name');
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('flags comment-only name value as empty (strict)', () => {
+    const testDir = createTestDir();
+    const skillDir = path.join(testDir, 'comment-only-name');
+    fs.mkdirSync(skillDir);
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'),
+      '---\nname: # todo\ndescription: "X"\norigin: ECC\n---\n# Skill');
+
+    const result = runSkillsValidator(testDir, ['--strict']);
+    assert.strictEqual(result.code, 1, 'Strict mode must fail CI on empty name');
+    assert.ok(result.stderr.includes("'name' is empty"),
+      `Should report empty name; got stderr: ${result.stderr}`);
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('tolerates ---trailing text outside frontmatter block', () => {
+    // A SKILL.md whose body contains a line starting with '---text'
+    // must not be parsed as frontmatter. Regression guard for
+    // closing-delimiter tightening: the old regex would greedily
+    // match '---trailing'.
+    const testDir = createTestDir();
+    const skillDir = path.join(testDir, 'no-frontmatter-dashes');
+    fs.mkdirSync(skillDir);
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'),
+      '# Skill\n\nSome body text.\n\n---trailing content\nmore body\n');
+
+    const result = runSkillsValidator(testDir, ['--strict']);
+    assert.strictEqual(result.code, 0,
+      `Should not flag frontmatter findings when no valid frontmatter exists; got stderr: ${result.stderr}`);
+    assert.ok(!result.stderr.includes('missing required field: name'),
+      'Must not treat ---trailing as a frontmatter closer');
     cleanupTestDir(testDir);
   })) passed++; else failed++;
 
@@ -1421,6 +2003,28 @@ function runTests() {
     cleanupTestDir(testDir);
   })) passed++; else failed++;
 
+  if (test('rejects agent with duplicate top-level frontmatter keys', () => {
+    const testDir = createTestDir();
+    fs.writeFileSync(path.join(testDir, 'dup-model.md'),
+      '---\nname: dup\nmodel: sonnet\ntools: Read, Write\ndescription: test\nmodel: opus\n---\n# Agent');
+
+    const result = runValidatorWithDir('validate-agents', 'AGENTS_DIR', testDir);
+    assert.strictEqual(result.code, 1, 'Should reject duplicate top-level YAML keys');
+    assert.ok(result.stderr.includes('Duplicate frontmatter keys'), 'Should report duplicate keys');
+    assert.ok(result.stderr.includes('model'), 'Should name the duplicated key');
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('allows duplicate-looking nested frontmatter keys', () => {
+    const testDir = createTestDir();
+    fs.writeFileSync(path.join(testDir, 'nested.md'),
+      '---\nmodel: sonnet\ntools: Read\nmetadata:\n  model: display-only\n---\n# Agent');
+
+    const result = runValidatorWithDir('validate-agents', 'AGENTS_DIR', testDir);
+    assert.strictEqual(result.code, 0, 'Indented nested keys should not count as top-level duplicates');
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
   // ── Round 32: empty frontmatter & edge cases ──
   console.log('\nRound 32: validate-agents (empty frontmatter):');
 
@@ -1927,7 +2531,7 @@ function runTests() {
       PreToolUse: [{
         matcher: 'Write',
         hooks: [{
-          type: 'intercept',
+          type: 'command',
           command: 'echo test',
           async: 'yes'  // Should be boolean, not string
         }]
@@ -1947,7 +2551,7 @@ function runTests() {
       PostToolUse: [{
         matcher: 'Edit',
         hooks: [{
-          type: 'intercept',
+          type: 'command',
           command: 'echo test',
           timeout: -5  // Must be non-negative
         }]
@@ -2105,6 +2709,31 @@ function runTests() {
     cleanupTestDir(testDir);
   })) passed++; else failed++;
 
+  console.log('\nRound 82b: validate-hooks (current official events and hook types):');
+
+  if (test('accepts UserPromptSubmit with omitted matcher and prompt/http/agent hooks', () => {
+    const testDir = createTestDir();
+    const hooksJson = JSON.stringify({
+      hooks: {
+        UserPromptSubmit: [
+          {
+            hooks: [
+              { type: 'prompt', prompt: 'Summarize the request.' },
+              { type: 'agent', prompt: 'Review for security issues.', model: 'gpt-5.4' },
+              { type: 'http', url: 'https://example.com/hooks', headers: { Authorization: 'Bearer token' } }
+            ]
+          }
+        ]
+      }
+    });
+    const hooksFile = path.join(testDir, 'hooks.json');
+    fs.writeFileSync(hooksFile, hooksJson);
+
+    const result = runValidatorWithDir('validate-hooks', 'HOOKS_FILE', hooksFile);
+    assert.strictEqual(result.code, 0, 'Should accept current official hook event/type combinations');
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
   // ── Round 83: validate-agents whitespace-only field, validate-skills empty SKILL.md ──
 
   console.log('\nRound 83: validate-agents (whitespace-only frontmatter field value):');
@@ -2136,6 +2765,369 @@ function runTests() {
     assert.strictEqual(result.code, 1, 'Should reject empty SKILL.md');
     assert.ok(result.stderr.includes('Empty file'),
       `Should report "Empty file", got: ${result.stderr}`);
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  // ==========================================
+  // validate-install-manifests.js
+  // ==========================================
+  console.log('\nvalidate-install-manifests.js:');
+
+  if (test('passes on real project install manifests', () => {
+    const result = runValidator('validate-install-manifests');
+    assert.strictEqual(result.code, 0, `Should pass, got stderr: ${result.stderr}`);
+    assert.ok(result.stdout.includes('Validated'), 'Should output validation count');
+  })) passed++; else failed++;
+
+  if (test('exits 0 when install manifests do not exist', () => {
+    const testDir = createTestDir();
+    const result = runValidatorWithDirs('validate-install-manifests', {
+      REPO_ROOT: testDir,
+      MODULES_MANIFEST_PATH: path.join(testDir, 'manifests', 'install-modules.json'),
+      PROFILES_MANIFEST_PATH: path.join(testDir, 'manifests', 'install-profiles.json')
+    });
+    assert.strictEqual(result.code, 0, 'Should skip when manifests are missing');
+    assert.ok(result.stdout.includes('skipping'), 'Should say skipping');
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('fails on invalid install manifest JSON', () => {
+    const testDir = createTestDir();
+    const manifestsDir = path.join(testDir, 'manifests');
+    fs.mkdirSync(manifestsDir, { recursive: true });
+    fs.writeFileSync(path.join(manifestsDir, 'install-modules.json'), '{ invalid json');
+    writeJson(path.join(manifestsDir, 'install-profiles.json'), {
+      version: 1,
+      profiles: {}
+    });
+
+    const result = runValidatorWithDirs('validate-install-manifests', {
+      REPO_ROOT: testDir,
+      MODULES_MANIFEST_PATH: path.join(manifestsDir, 'install-modules.json'),
+      PROFILES_MANIFEST_PATH: path.join(manifestsDir, 'install-profiles.json'),
+      COMPONENTS_MANIFEST_PATH: path.join(manifestsDir, 'install-components.json'),
+      MODULES_SCHEMA_PATH: modulesSchemaPath,
+      PROFILES_SCHEMA_PATH: profilesSchemaPath,
+      COMPONENTS_SCHEMA_PATH: componentsSchemaPath
+    });
+    assert.strictEqual(result.code, 1, 'Should fail on invalid JSON');
+    assert.ok(result.stderr.includes('Invalid JSON'), 'Should report invalid JSON');
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('fails when install module references a missing path', () => {
+    const testDir = createTestDir();
+    writeJson(path.join(testDir, 'manifests', 'install-modules.json'), {
+      version: 1,
+      modules: [
+        {
+          id: 'rules-core',
+          kind: 'rules',
+          description: 'Rules',
+          paths: ['rules'],
+          targets: ['claude'],
+          dependencies: [],
+          defaultInstall: true,
+          cost: 'light',
+          stability: 'stable'
+        },
+        {
+          id: 'security',
+          kind: 'skills',
+          description: 'Security',
+          paths: ['skills/security-review'],
+          targets: ['codex'],
+          dependencies: [],
+          defaultInstall: false,
+          cost: 'medium',
+          stability: 'stable'
+        }
+      ]
+    });
+    writeJson(path.join(testDir, 'manifests', 'install-profiles.json'), {
+      version: 1,
+      profiles: {
+        core: { description: 'Core', modules: ['rules-core'] },
+        developer: { description: 'Developer', modules: ['rules-core'] },
+        security: { description: 'Security', modules: ['rules-core', 'security'] },
+        research: { description: 'Research', modules: ['rules-core'] },
+        full: { description: 'Full', modules: ['rules-core', 'security'] }
+      }
+    });
+    writeInstallComponentsManifest(testDir, [
+      {
+        id: 'baseline:rules',
+        family: 'baseline',
+        description: 'Rules',
+        modules: ['rules-core']
+      },
+      {
+        id: 'capability:security',
+        family: 'capability',
+        description: 'Security',
+        modules: ['security']
+      }
+    ]);
+    fs.mkdirSync(path.join(testDir, 'rules'), { recursive: true });
+
+    const result = runValidatorWithDirs('validate-install-manifests', {
+      REPO_ROOT: testDir,
+      MODULES_MANIFEST_PATH: path.join(testDir, 'manifests', 'install-modules.json'),
+      PROFILES_MANIFEST_PATH: path.join(testDir, 'manifests', 'install-profiles.json'),
+      COMPONENTS_MANIFEST_PATH: path.join(testDir, 'manifests', 'install-components.json'),
+      MODULES_SCHEMA_PATH: modulesSchemaPath,
+      PROFILES_SCHEMA_PATH: profilesSchemaPath,
+      COMPONENTS_SCHEMA_PATH: componentsSchemaPath
+    });
+    assert.strictEqual(result.code, 1, 'Should fail when a referenced path is missing');
+    assert.ok(result.stderr.includes('references missing path'), 'Should report missing path');
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('fails when two install modules claim the same path', () => {
+    const testDir = createTestDir();
+    writeJson(path.join(testDir, 'manifests', 'install-modules.json'), {
+      version: 1,
+      modules: [
+        {
+          id: 'agents-core',
+          kind: 'agents',
+          description: 'Agents',
+          paths: ['agents'],
+          targets: ['codex'],
+          dependencies: [],
+          defaultInstall: true,
+          cost: 'light',
+          stability: 'stable'
+        },
+        {
+          id: 'commands-core',
+          kind: 'commands',
+          description: 'Commands',
+          paths: ['agents'],
+          targets: ['codex'],
+          dependencies: [],
+          defaultInstall: true,
+          cost: 'light',
+          stability: 'stable'
+        }
+      ]
+    });
+    writeJson(path.join(testDir, 'manifests', 'install-profiles.json'), {
+      version: 1,
+      profiles: {
+        core: { description: 'Core', modules: ['agents-core', 'commands-core'] },
+        developer: { description: 'Developer', modules: ['agents-core', 'commands-core'] },
+        security: { description: 'Security', modules: ['agents-core', 'commands-core'] },
+        research: { description: 'Research', modules: ['agents-core', 'commands-core'] },
+        full: { description: 'Full', modules: ['agents-core', 'commands-core'] }
+      }
+    });
+    writeInstallComponentsManifest(testDir, [
+      {
+        id: 'baseline:agents',
+        family: 'baseline',
+        description: 'Agents',
+        modules: ['agents-core']
+      },
+      {
+        id: 'baseline:commands',
+        family: 'baseline',
+        description: 'Commands',
+        modules: ['commands-core']
+      }
+    ]);
+    fs.mkdirSync(path.join(testDir, 'agents'), { recursive: true });
+
+    const result = runValidatorWithDirs('validate-install-manifests', {
+      REPO_ROOT: testDir,
+      MODULES_MANIFEST_PATH: path.join(testDir, 'manifests', 'install-modules.json'),
+      PROFILES_MANIFEST_PATH: path.join(testDir, 'manifests', 'install-profiles.json'),
+      COMPONENTS_MANIFEST_PATH: path.join(testDir, 'manifests', 'install-components.json'),
+      MODULES_SCHEMA_PATH: modulesSchemaPath,
+      PROFILES_SCHEMA_PATH: profilesSchemaPath,
+      COMPONENTS_SCHEMA_PATH: componentsSchemaPath
+    });
+    assert.strictEqual(result.code, 1, 'Should fail on duplicate claimed paths');
+    assert.ok(result.stderr.includes('claimed by both'), 'Should report duplicate path claims');
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('fails when an install profile references an unknown module', () => {
+    const testDir = createTestDir();
+    writeJson(path.join(testDir, 'manifests', 'install-modules.json'), {
+      version: 1,
+      modules: [
+        {
+          id: 'rules-core',
+          kind: 'rules',
+          description: 'Rules',
+          paths: ['rules'],
+          targets: ['claude'],
+          dependencies: [],
+          defaultInstall: true,
+          cost: 'light',
+          stability: 'stable'
+        }
+      ]
+    });
+    writeJson(path.join(testDir, 'manifests', 'install-profiles.json'), {
+      version: 1,
+      profiles: {
+        core: { description: 'Core', modules: ['rules-core'] },
+        developer: { description: 'Developer', modules: ['rules-core'] },
+        security: { description: 'Security', modules: ['rules-core'] },
+        research: { description: 'Research', modules: ['rules-core'] },
+        full: { description: 'Full', modules: ['rules-core', 'ghost-module'] }
+      }
+    });
+    writeInstallComponentsManifest(testDir, [
+      {
+        id: 'baseline:rules',
+        family: 'baseline',
+        description: 'Rules',
+        modules: ['rules-core']
+      }
+    ]);
+    fs.mkdirSync(path.join(testDir, 'rules'), { recursive: true });
+
+    const result = runValidatorWithDirs('validate-install-manifests', {
+      REPO_ROOT: testDir,
+      MODULES_MANIFEST_PATH: path.join(testDir, 'manifests', 'install-modules.json'),
+      PROFILES_MANIFEST_PATH: path.join(testDir, 'manifests', 'install-profiles.json'),
+      COMPONENTS_MANIFEST_PATH: path.join(testDir, 'manifests', 'install-components.json'),
+      MODULES_SCHEMA_PATH: modulesSchemaPath,
+      PROFILES_SCHEMA_PATH: profilesSchemaPath,
+      COMPONENTS_SCHEMA_PATH: componentsSchemaPath
+    });
+    assert.strictEqual(result.code, 1, 'Should fail on unknown profile module');
+    assert.ok(result.stderr.includes('references unknown module ghost-module'),
+      'Should report unknown module reference');
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('passes on a valid standalone install manifest fixture', () => {
+    const testDir = createTestDir();
+    writeJson(path.join(testDir, 'manifests', 'install-modules.json'), {
+      version: 1,
+      modules: [
+        {
+          id: 'rules-core',
+          kind: 'rules',
+          description: 'Rules',
+          paths: ['rules'],
+          targets: ['claude'],
+          dependencies: [],
+          defaultInstall: true,
+          cost: 'light',
+          stability: 'stable'
+        },
+        {
+          id: 'orchestration',
+          kind: 'orchestration',
+          description: 'Orchestration',
+          paths: ['scripts/orchestrate-worktrees.js'],
+          targets: ['codex'],
+          dependencies: ['rules-core'],
+          defaultInstall: false,
+          cost: 'medium',
+          stability: 'beta'
+        }
+      ]
+    });
+    writeJson(path.join(testDir, 'manifests', 'install-profiles.json'), {
+      version: 1,
+      profiles: {
+        core: { description: 'Core', modules: ['rules-core'] },
+        developer: { description: 'Developer', modules: ['rules-core', 'orchestration'] },
+        security: { description: 'Security', modules: ['rules-core'] },
+        research: { description: 'Research', modules: ['rules-core'] },
+        full: { description: 'Full', modules: ['rules-core', 'orchestration'] }
+      }
+    });
+    writeInstallComponentsManifest(testDir, [
+      {
+        id: 'baseline:rules',
+        family: 'baseline',
+        description: 'Rules',
+        modules: ['rules-core']
+      },
+      {
+        id: 'capability:orchestration',
+        family: 'capability',
+        description: 'Orchestration',
+        modules: ['orchestration']
+      }
+    ]);
+    fs.mkdirSync(path.join(testDir, 'rules'), { recursive: true });
+    fs.mkdirSync(path.join(testDir, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(testDir, 'scripts', 'orchestrate-worktrees.js'), '#!/usr/bin/env node\n');
+
+    const result = runValidatorWithDirs('validate-install-manifests', {
+      REPO_ROOT: testDir,
+      MODULES_MANIFEST_PATH: path.join(testDir, 'manifests', 'install-modules.json'),
+      PROFILES_MANIFEST_PATH: path.join(testDir, 'manifests', 'install-profiles.json'),
+      COMPONENTS_MANIFEST_PATH: path.join(testDir, 'manifests', 'install-components.json'),
+      MODULES_SCHEMA_PATH: modulesSchemaPath,
+      PROFILES_SCHEMA_PATH: profilesSchemaPath,
+      COMPONENTS_SCHEMA_PATH: componentsSchemaPath
+    });
+    assert.strictEqual(result.code, 0, `Should pass valid fixture, got stderr: ${result.stderr}`);
+    assert.ok(result.stdout.includes('Validated 2 install modules, 2 install components, and 5 profiles'),
+      'Should report validated install manifest counts');
+    cleanupTestDir(testDir);
+  })) passed++; else failed++;
+
+  if (test('fails when an install component references an unknown module', () => {
+    const testDir = createTestDir();
+    writeJson(path.join(testDir, 'manifests', 'install-modules.json'), {
+      version: 1,
+      modules: [
+        {
+          id: 'rules-core',
+          kind: 'rules',
+          description: 'Rules',
+          paths: ['rules'],
+          targets: ['claude'],
+          dependencies: [],
+          defaultInstall: true,
+          cost: 'light',
+          stability: 'stable'
+        }
+      ]
+    });
+    writeJson(path.join(testDir, 'manifests', 'install-profiles.json'), {
+      version: 1,
+      profiles: {
+        core: { description: 'Core', modules: ['rules-core'] },
+        developer: { description: 'Developer', modules: ['rules-core'] },
+        security: { description: 'Security', modules: ['rules-core'] },
+        research: { description: 'Research', modules: ['rules-core'] },
+        full: { description: 'Full', modules: ['rules-core'] }
+      }
+    });
+    writeInstallComponentsManifest(testDir, [
+      {
+        id: 'capability:security',
+        family: 'capability',
+        description: 'Security',
+        modules: ['ghost-module']
+      }
+    ]);
+    fs.mkdirSync(path.join(testDir, 'rules'), { recursive: true });
+
+    const result = runValidatorWithDirs('validate-install-manifests', {
+      REPO_ROOT: testDir,
+      MODULES_MANIFEST_PATH: path.join(testDir, 'manifests', 'install-modules.json'),
+      PROFILES_MANIFEST_PATH: path.join(testDir, 'manifests', 'install-profiles.json'),
+      COMPONENTS_MANIFEST_PATH: path.join(testDir, 'manifests', 'install-components.json'),
+      MODULES_SCHEMA_PATH: modulesSchemaPath,
+      PROFILES_SCHEMA_PATH: profilesSchemaPath,
+      COMPONENTS_SCHEMA_PATH: componentsSchemaPath
+    });
+    assert.strictEqual(result.code, 1, 'Should fail on unknown component module');
+    assert.ok(result.stderr.includes('references unknown module ghost-module'),
+      'Should report unknown component module');
     cleanupTestDir(testDir);
   })) passed++; else failed++;
 

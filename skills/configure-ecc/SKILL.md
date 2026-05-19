@@ -18,7 +18,7 @@ An interactive, step-by-step installation wizard for the Everything Claude Code 
 ## Prerequisites
 
 This skill must be accessible to Claude Code before activation. Two ways to bootstrap:
-1. **Via Plugin**: `/plugin install everything-claude-code` — the plugin loads this skill automatically
+1. **Via Plugin**: `/plugin install ecc@ecc` — the plugin loads this skill automatically
 2. **Manual**: Copy only this skill to `~/.claude/skills/configure-ecc/SKILL.md`, then activate by saying "configure ecc"
 
 ---
@@ -82,14 +82,18 @@ If the user chooses niche or core + niche, continue to category selection below 
 
 ### 2b: Choose Skill Categories
 
-There are 27 skills organized into 4 categories. Use `AskUserQuestion` with `multiSelect: true`:
+There are 7 selectable category groups below. The detailed confirmation lists that follow cover 45 skills across 8 categories, plus 1 standalone template. Use `AskUserQuestion` with `multiSelect: true`:
 
 ```
 Question: "Which skill categories do you want to install?"
 Options:
-  - "Framework & Language" — "Django, Spring Boot, Go, Python, Java, Frontend, Backend patterns"
+  - "Framework & Language" — "Django, Laravel, Spring Boot, Quarkus, Go, Python, Java, Frontend, Backend patterns"
   - "Database" — "PostgreSQL, ClickHouse, JPA/Hibernate patterns"
   - "Workflow & Quality" — "TDD, verification, learning, security review, compaction"
+  - "Research & APIs" — "Deep research, Exa search, Claude API patterns"
+  - "Social & Content Distribution" — "X/Twitter API, crossposting alongside content-engine"
+  - "Media Generation" — "fal.ai image/video/audio alongside VideoDB"
+  - "Orchestration" — "dmux multi-agent workflows"
   - "All skills" — "Install every available skill"
 ```
 
@@ -97,7 +101,7 @@ Options:
 
 For each selected category, print the full list of skills below and ask the user to confirm or deselect specific ones. If the list exceeds 4 items, print the list as text and use `AskUserQuestion` with an "Install all listed" option plus "Other" for the user to paste specific names.
 
-**Category: Framework & Language (17 skills)**
+**Category: Framework & Language (25 skills)**
 
 | Skill | Description |
 |-------|-------------|
@@ -107,13 +111,21 @@ For each selected category, print the full list of skills below and ask the user
 | `django-security` | Django security: auth, CSRF, SQL injection, XSS prevention |
 | `django-tdd` | Django testing with pytest-django, factory_boy, mocking, coverage |
 | `django-verification` | Django verification loop: migrations, linting, tests, security scans |
+| `laravel-patterns` | Laravel architecture patterns: routing, controllers, Eloquent, queues, caching |
+| `laravel-security` | Laravel security: auth, policies, CSRF, mass assignment, rate limiting |
+| `laravel-tdd` | Laravel testing with PHPUnit and Pest, factories, fakes, coverage |
+| `laravel-verification` | Laravel verification: linting, static analysis, tests, security scans |
 | `frontend-patterns` | React, Next.js, state management, performance, UI patterns |
 | `frontend-slides` | Zero-dependency HTML presentations, style previews, and PPTX-to-web conversion |
 | `golang-patterns` | Idiomatic Go patterns, conventions for robust Go applications |
 | `golang-testing` | Go testing: table-driven tests, subtests, benchmarks, fuzzing |
-| `java-coding-standards` | Java coding standards for Spring Boot: naming, immutability, Optional, streams |
+| `java-coding-standards` | Java coding standards for Spring Boot and Quarkus: naming, immutability, Optional, streams, CDI |
 | `python-patterns` | Pythonic idioms, PEP 8, type hints, best practices |
 | `python-testing` | Python testing with pytest, TDD, fixtures, mocking, parametrization |
+| `quarkus-patterns` | Quarkus architecture, Camel messaging, CDI services, Panache data access |
+| `quarkus-security` | Quarkus security: JWT/OIDC, RBAC, input validation, secrets management |
+| `quarkus-tdd` | Quarkus TDD with JUnit 5, Mockito, REST Assured, Camel testing |
+| `quarkus-verification` | Quarkus verification: build, static analysis, tests, native compilation |
 | `springboot-patterns` | Spring Boot architecture, REST API, layered services, caching, async |
 | `springboot-security` | Spring Security: authn/authz, validation, CSRF, secrets, rate limiting |
 | `springboot-tdd` | Spring Boot TDD with JUnit 5, Mockito, MockMvc, Testcontainers |
@@ -131,8 +143,8 @@ For each selected category, print the full list of skills below and ask the user
 
 | Skill | Description |
 |-------|-------------|
-| `continuous-learning` | Auto-extract reusable patterns from sessions as learned skills |
-| `continuous-learning-v2` | Instinct-based learning with confidence scoring, evolves into skills/commands/agents |
+| `continuous-learning` | Legacy v1 Stop-hook session pattern extraction; prefer `continuous-learning-v2` for new installs |
+| `continuous-learning-v2` | Instinct-based learning with confidence scoring, evolves into skills, agents, and optional legacy command shims |
 | `eval-harness` | Formal evaluation framework for eval-driven development (EDD) |
 | `iterative-retrieval` | Progressive context refinement for subagent context problem |
 | `security-review` | Security checklist: auth, input, secrets, API, payment features |
@@ -150,17 +162,57 @@ For each selected category, print the full list of skills below and ask the user
 | `investor-materials` | Pitch decks, one-pagers, investor memos, and financial models |
 | `investor-outreach` | Personalized investor cold emails, warm intros, and follow-ups |
 
+**Category: Research & APIs (2 skills)**
+
+| Skill | Description |
+|-------|-------------|
+| `deep-research` | Multi-source deep research using firecrawl and exa MCPs with cited reports |
+| `exa-search` | Neural search via Exa MCP for web, code, company, and people research |
+
+`claude-api` is an Anthropic canonical skill. Install it from [`anthropics/skills`](https://github.com/anthropics/skills) when you want the official Claude API workflow instead of an ECC-bundled copy.
+
+**Category: Social & Content Distribution (2 skills)**
+
+| Skill | Description |
+|-------|-------------|
+| `x-api` | X/Twitter API integration for posting, threads, search, and analytics |
+| `crosspost` | Multi-platform content distribution with platform-native adaptation |
+
+**Category: Media Generation (2 skills)**
+
+| Skill | Description |
+|-------|-------------|
+| `fal-ai-media` | Unified AI media generation (image, video, audio) via fal.ai MCP |
+| `video-editing` | AI-assisted video editing for cutting, structuring, and augmenting real footage |
+
+**Category: Orchestration (1 skill)**
+
+| Skill | Description |
+|-------|-------------|
+| `dmux-workflows` | Multi-agent orchestration using dmux for parallel agent sessions |
+
 **Standalone**
 
 | Skill | Description |
 |-------|-------------|
-| `project-guidelines-example` | Template for creating project-specific skills |
+| `docs/examples/project-guidelines-template.md` | Template for creating project-specific skills |
 
 ### 2d: Execute Installation
 
-For each selected skill, copy the entire skill directory:
+For each selected skill, copy the entire skill directory from the correct source root:
+
 ```bash
-cp -r $ECC_ROOT/skills/<skill-name> $TARGET/skills/
+# Core skills live under .agents/skills/
+cp -R "$ECC_ROOT/.agents/skills/<skill-name>" "$TARGET/skills/"
+
+# Niche skills live under skills/
+cp -R "$ECC_ROOT/skills/<skill-name>" "$TARGET/skills/"
+```
+
+When iterating over globbed source directories, never pass a trailing-slash source directly to `cp`. Use the directory path as the destination name explicitly:
+
+```bash
+cp -R "${src%/}" "$TARGET/skills/$(basename "${src%/}")"
 ```
 
 Note: `continuous-learning` and `continuous-learning-v2` have extra files (config.json, hooks, scripts) — ensure the entire directory is copied, not just SKILL.md.
@@ -182,13 +234,13 @@ Options:
 
 Execute installation:
 ```bash
-# Common rules (flat copy into rules/)
-cp -r $ECC_ROOT/rules/common/* $TARGET/rules/
+# Common rules
+cp -r $ECC_ROOT/rules/common $TARGET/rules/common
 
-# Language-specific rules (flat copy into rules/)
-cp -r $ECC_ROOT/rules/typescript/* $TARGET/rules/   # if selected
-cp -r $ECC_ROOT/rules/python/* $TARGET/rules/        # if selected
-cp -r $ECC_ROOT/rules/golang/* $TARGET/rules/        # if selected
+# Language-specific rules (preserve per-language directories)
+cp -r $ECC_ROOT/rules/typescript $TARGET/rules/typescript   # if selected
+cp -r $ECC_ROOT/rules/python $TARGET/rules/python            # if selected
+cp -r $ECC_ROOT/rules/golang $TARGET/rules/golang            # if selected
 ```
 
 **Important**: If the user selects any language-specific rules but NOT common rules, warn them:
@@ -226,10 +278,16 @@ grep -rn "skills/" $TARGET/skills/
 
 Some skills reference others. Verify these dependencies:
 - `django-tdd` may reference `django-patterns`
+- `laravel-tdd` may reference `laravel-patterns`
+- `quarkus-tdd` may reference `quarkus-patterns`
 - `springboot-tdd` may reference `springboot-patterns`
 - `continuous-learning-v2` references `~/.claude/homunculus/` directory
 - `python-testing` may reference `python-patterns`
 - `golang-testing` may reference `golang-patterns`
+- `crosspost` references `content-engine` and `x-api`
+- `deep-research` references `exa-search` (complementary MCP tools)
+- `fal-ai-media` references `videodb` (complementary media skill)
+- `x-api` references `content-engine` and `crosspost`
 - Language-specific rules reference `common/` counterparts
 
 ### 4d: Report Issues

@@ -1,7 +1,6 @@
 ---
 name: frontend-patterns
 description: Frontend development patterns for React, Next.js, state management, performance optimization, and UI best practices.
-origin: ECC
 ---
 
 # Frontend Development Patterns
@@ -18,12 +17,18 @@ Modern frontend patterns for React, Next.js, and performant user interfaces.
 - Handling client-side routing and navigation
 - Building accessible, responsive UI patterns
 
+## Privacy and Data Boundaries
+
+Frontend examples should use synthetic or domain-generic data. Do not collect, log, persist, or display credentials, access tokens, SSNs, health data, payment details, private emails, phone numbers, or other sensitive personal data unless the user explicitly requests a scoped implementation with appropriate validation, redaction, and access controls.
+
+Avoid adding analytics, tracking pixels, third-party scripts, or external data sinks without explicit approval. When handling user data, prefer least-privilege APIs, client-side redaction before logging, and server-side validation for every boundary.
+
 ## Component Patterns
 
 ### Composition Over Inheritance
 
 ```typescript
-// ✅ GOOD: Component composition
+// PASS: GOOD: Component composition
 interface CardProps {
   children: React.ReactNode
   variant?: 'default' | 'outlined'
@@ -294,17 +299,17 @@ export function useMarkets() {
 ### Memoization
 
 ```typescript
-// ✅ useMemo for expensive computations
+// PASS: useMemo for expensive computations
 const sortedMarkets = useMemo(() => {
   return markets.sort((a, b) => b.volume - a.volume)
 }, [markets])
 
-// ✅ useCallback for functions passed to children
+// PASS: useCallback for functions passed to children
 const handleSearch = useCallback((query: string) => {
   setSearchQuery(query)
 }, [])
 
-// ✅ React.memo for pure components
+// PASS: React.memo for pure components
 export const MarketCard = React.memo<MarketCardProps>(({ market }) => {
   return (
     <div className="market-card">
@@ -320,7 +325,7 @@ export const MarketCard = React.memo<MarketCardProps>(({ market }) => {
 ```typescript
 import { lazy, Suspense } from 'react'
 
-// ✅ Lazy load heavy components
+// PASS: Lazy load heavy components
 const HeavyChart = lazy(() => import('./HeavyChart'))
 const ThreeJsBackground = lazy(() => import('./ThreeJsBackground'))
 
@@ -515,7 +520,7 @@ export class ErrorBoundary extends React.Component<
 ```typescript
 import { motion, AnimatePresence } from 'framer-motion'
 
-// ✅ List animations
+// PASS: List animations
 export function AnimatedMarketList({ markets }: { markets: Market[] }) {
   return (
     <AnimatePresence>
@@ -534,7 +539,7 @@ export function AnimatedMarketList({ markets }: { markets: Market[] }) {
   )
 }
 
-// ✅ Modal animations
+// PASS: Modal animations
 export function Modal({ isOpen, onClose, children }: ModalProps) {
   return (
     <AnimatePresence>

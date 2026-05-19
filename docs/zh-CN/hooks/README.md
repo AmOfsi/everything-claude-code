@@ -5,7 +5,7 @@
 ## 钩子如何工作
 
 ```
-User request → Claude picks a tool → PreToolUse hook runs → Tool executes → PostToolUse hook runs
+用户请求 → Claude 选择工具 → PreToolUse 钩子运行 → 工具执行 → PostToolUse 钩子运行
 ```
 
 * **PreToolUse** 钩子在工具执行前运行。它们可以**阻止**（退出码 2）或**警告**（stderr 输出但不阻止）。
@@ -20,11 +20,11 @@ User request → Claude picks a tool → PreToolUse hook runs → Tool executes 
 
 | 钩子 | 匹配器 | 行为 | 退出码 |
 |------|---------|----------|-----------|
-| **开发服务器阻止器** | `Bash` | 在 tmux 外部阻止 `npm run dev` 等命令 —— 确保日志访问 | 2 (阻止) |
-| **Tmux 提醒** | `Bash` | 建议对长时间运行的命令（npm test, cargo build, docker）使用 tmux | 0 (警告) |
-| **Git push 提醒** | `Bash` | 提醒在 `git push` 前审查更改 | 0 (警告) |
-| **文档文件警告** | `Write` | 警告非标准的 `.md`/`.txt` 文件（允许 README, CLAUDE, CONTRIBUTING, CHANGELOG, LICENSE, SKILL, docs/, skills/）；跨平台路径处理 | 0 (警告) |
-| **策略性压缩** | `Edit\|Write` | 建议在逻辑间隔（约每 50 次工具调用）手动执行 `/compact` | 0 (警告) |
+| **开发服务器拦截器** | `Bash` | 在 tmux 外阻止 `npm run dev` 等命令 — 确保日志可访问 | 2 (拦截) |
+| **Tmux 提醒器** | `Bash` | 对长时间运行命令（npm test、cargo build、docker）建议使用 tmux | 0 (警告) |
+| **Git 推送提醒器** | `Bash` | 在 `git push` 前提醒检查变更 | 0 (警告) |
+| **文档文件警告器** | `Write` | 对非标准 `.md`/`.txt` 文件发出警告（允许 README、CLAUDE、CONTRIBUTING、CHANGELOG、LICENSE、SKILL、docs/、skills/）；跨平台路径处理 | 0 (警告) |
+| **策略性压缩提醒器** | `Edit\|Write` | 建议在逻辑间隔（约每 50 次工具调用）手动执行 `/compact` | 0 (警告) |
 
 ### PostToolUse 钩子
 

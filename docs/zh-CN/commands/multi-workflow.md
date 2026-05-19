@@ -35,34 +35,34 @@
 **调用语法**（并行：`run_in_background: true`，串行：`false`）：
 
 ```
-# New session call
+# 新会话调用
 Bash({
   command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend <codex|gemini> {{GEMINI_MODEL_FLAG}}- \"$PWD\" <<'EOF'
-ROLE_FILE: <role prompt path>
+ROLE_FILE: <角色提示文件路径>
 <TASK>
-Requirement: <enhanced requirement (or $ARGUMENTS if not enhanced)>
-Context: <project context and analysis from previous phases>
+需求: <增强后的需求（如未增强则为$ARGUMENTS）>
+上下文: <来自先前阶段的项目上下文和分析>
 </TASK>
-OUTPUT: Expected output format
+OUTPUT: 期望的输出格式
 EOF",
   run_in_background: true,
   timeout: 3600000,
-  description: "Brief description"
+  description: "简要描述"
 })
 
-# Resume session call
+# 恢复会话调用
 Bash({
   command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend <codex|gemini> {{GEMINI_MODEL_FLAG}}resume <SESSION_ID> - \"$PWD\" <<'EOF'
-ROLE_FILE: <role prompt path>
+ROLE_FILE: <角色提示文件路径>
 <TASK>
-Requirement: <enhanced requirement (or $ARGUMENTS if not enhanced)>
-Context: <project context and analysis from previous phases>
+需求: <增强后的需求（如未增强则为$ARGUMENTS）>
+上下文: <来自先前阶段的项目上下文和分析>
 </TASK>
-OUTPUT: Expected output format
+OUTPUT: 期望的输出格式
 EOF",
   run_in_background: true,
   timeout: 3600000,
-  description: "Brief description"
+  description: "简要描述"
 })
 ```
 
@@ -103,6 +103,14 @@ TaskOutput({ task_id: "<task_id>", block: true, timeout: 600000 })
 3. 每个阶段完成后请求用户确认。
 4. 当评分 < 7 或用户不批准时强制停止。
 5. 需要时（例如确认/选择/批准）使用 `AskUserQuestion` 工具进行用户交互。
+
+## 何时使用外部编排
+
+当工作必须拆分给需要隔离的 git 状态、独立终端或独立构建/测试执行的并行工作器时，请使用外部 tmux/工作树编排。对于轻量级分析、规划或审查（其中主会话是唯一的写入者），请使用进程内子代理。
+
+```bash
+node scripts/orchestrate-worktrees.js .claude/plan/workflow-e2e-test.json --execute
+```
 
 ***
 
